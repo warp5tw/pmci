@@ -2,7 +2,7 @@
 
 #include "MCTPBinding.hpp"
 
-#include <libmctp-astpcie.h>
+#include <libmctp-nupcie.h>
 
 #include <xyz/openbmc_project/MCTP/Binding/PCIe/server.hpp>
 
@@ -21,7 +21,7 @@ class PCIeBinding : public MctpBinding
   private:
     uint16_t bdf;
     pcie_binding::DiscoveryFlags discoveredFlag{};
-    struct mctp_binding_astpcie* pcie = nullptr;
+    struct mctp_binding_nupcie* pcie = nullptr;
     boost::asio::posix::stream_descriptor streamMonitor;
     bool endpointDiscoveryFlow();
     void readResponse();

@@ -42,7 +42,7 @@ PCIeBinding::PCIeBinding(std::shared_ptr<object_server>& objServer,
 
 bool PCIeBinding::endpointDiscoveryFlow()
 {
-    struct mctp_astpcie_pkt_private pktPrv;
+    struct mctp_nupcie_pkt_private pktPrv;
     pktPrv.routing = PCIE_ROUTE_TO_RC;
     pktPrv.remote_id = bdf;
     /*
@@ -81,7 +81,7 @@ void PCIeBinding::readResponse()
                     "Error reading PCIe response");
                 readResponse();
             }
-            mctp_astpcie_rx(pcie);
+            mctp_nupcie_rx(pcie);
             readResponse();
         });
 }
@@ -94,7 +94,7 @@ void PCIeBinding::initializeBinding([[maybe_unused]] ConfigurationVariant& conf)
 {
     int status = 0;
     initializeMctp();
-    pcie = mctp_astpcie_init();
+    pcie = mctp_nupcie_init();
     if (pcie == nullptr)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
@@ -102,7 +102,7 @@ void PCIeBinding::initializeBinding([[maybe_unused]] ConfigurationVariant& conf)
         throw std::system_error(
             std::make_error_code(std::errc::not_enough_memory));
     }
-    struct mctp_binding* binding = mctp_astpcie_core(pcie);
+    struct mctp_binding* binding = mctp_nupcie_core(pcie);
     if (binding == nullptr)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
@@ -121,7 +121,7 @@ void PCIeBinding::initializeBinding([[maybe_unused]] ConfigurationVariant& conf)
     mctp_set_rx_all(mctp, rxMessage, this);
     mctp_binding_set_tx_enabled(binding, true);
 
-    int driverFd = mctp_astpcie_get_fd(pcie);
+    int driverFd = mctp_nupcie_get_fd(pcie);
     if (driverFd < 0)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
@@ -152,6 +152,6 @@ PCIeBinding::~PCIeBinding()
     }
     if (pcie)
     {
-        mctp_astpcie_free(pcie);
+        mctp_nupcie_free(pcie);
     }
 }
