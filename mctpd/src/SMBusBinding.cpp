@@ -169,7 +169,7 @@ int getSMBusOutputAddress([[maybe_unused]] uint8_t dstEid, uint8_t* outAddr)
 {
     // Mapping should rely on routing table and message binding private
     // Handling this here until libmctp implements routing infrastructure
-    *outAddr = 0xB0; // Add in card addresses
+    *outAddr = 0xE2; // Add in card addresses
     return 0;
 }
 
@@ -293,7 +293,7 @@ void SMBusBinding::SMBusInit()
         throwRunTimeError("Error in opening smbus rootport");
     }
     std::string inputDevice =
-        "/sys/bus/i2c/devices/" + rootPort + "-1008/slave-mqueue";
+        "/sys/bus/i2c/devices/" + rootPort + "-1010/slave-mqueue";
 
     inFd = open(inputDevice.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
 
@@ -302,7 +302,7 @@ void SMBusBinding::SMBusInit()
     {
         std::string newInputDevice =
             "/sys/bus/i2c/devices/i2c-" + rootPort + "/new_device";
-        std::string para("slave-mqueue 0x1008");
+        std::string para("slave-mqueue 0x1010");
         std::fstream deviceFile;
         deviceFile.open(newInputDevice, std::ios::out);
         deviceFile << para;
