@@ -18,7 +18,7 @@ extern "C" {
 #define PLDM_GET_SENSOR_READING_REQ_BYTES 4
 /* Response lengths are inclusive of completion code */
 #define PLDM_SET_STATE_EFFECTER_STATES_RESP_BYTES 1
-
+#define PLDM_SET_NUMERIC_SENSOR_ENABLE_RESP_BYTES 1
 #define PLDM_SET_NUMERIC_EFFECTER_VALUE_RESP_BYTES 1
 #define PLDM_SET_NUMERIC_EFFECTER_VALUE_MIN_REQ_BYTES 4
 
@@ -28,6 +28,7 @@ extern "C" {
 #define PLDM_GET_NUMERIC_EFFECTER_VALUE_MIN_RESP_BYTES 5
 #define PLDM_GET_SENSOR_READING_MIN_RESP_BYTES 8
 #define PLDM_GET_STATE_SENSOR_READINGS_MIN_RESP_BYTES 2
+#define PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES 8
 
 /* Minimum length for PLDM PlatformEventMessage request */
 #define PLDM_PLATFORM_EVENT_MESSAGE_MIN_REQ_BYTES 3
@@ -109,7 +110,10 @@ enum pldm_effecter_oper_state {
 };
 
 enum pldm_platform_commands {
+	PLDM_SET_NUMERIC_SENSOR_ENABLE = 0x10,
 	PLDM_GET_SENSOR_READING = 0x11,
+	PLDM_GET_SENSOR_THRESHOLD = 0x12,
+	PLDM_SET_SENSOR_THRESHOLD = 0x13,
 	PLDM_GET_STATE_SENSOR_READINGS = 0x21,
 	PLDM_SET_NUMERIC_EFFECTER_VALUE = 0x31,
 	PLDM_GET_NUMERIC_EFFECTER_VALUE = 0x32,
@@ -688,6 +692,16 @@ struct pldm_get_numeric_effecter_value_resp {
 	uint8_t pending_and_present_values[1];
 } __attribute__((packed));
 
+/** @struct pldm_set_numeric_sensor_enable_req
+ *
+ *  Structure representing PLDM set_numeric_sensor_enable request
+ */
+struct pldm_set_numeric_sensor_enable_req {
+	uint16_t sensor_id;
+	uint8_t sensor_operational_state;
+	uint8_t sensor_event_message_enable;
+} __attribute__((packed));
+
 /** @struct pldm_get_sensor_reading_req
  *
  *  Structure representing PLDM get sensor reading request
@@ -713,6 +727,43 @@ struct pldm_get_sensor_reading_resp {
 } __attribute__((packed));
 
 /* Responder */
+
+/** @struct pldm_set_sensor_reading_req
+ *
+ *  Structure representing PLDM get sensor reading request
+ */
+struct pldm_set_sensor_threshold_req {
+	uint16_t sensor_id;
+	uint8_t sensor_data_size;
+	uint8_t thresholds[1];
+} __attribute__((packed));
+
+/** @struct pldm_get_sensor_threshold_resp
+ *
+ *  Structure representing PLDM get sensor threshold response
+ */
+struct pldm_set_sensor_threshold_resp {
+	uint8_t completion_code;
+} __attribute__((packed));
+
+
+/** @struct pldm_get_sensor_reading_req
+ *
+ *  Structure representing PLDM get sensor reading request
+ */
+struct pldm_get_sensor_threshold_req {
+	uint16_t sensor_id;
+} __attribute__((packed));
+
+/** @struct pldm_get_sensor_threshold_resp
+ *
+ *  Structure representing PLDM get sensor threshold response
+ */
+struct pldm_get_sensor_threshold_resp {
+	uint8_t completion_code;
+	uint8_t sensor_data_size;
+	uint8_t threshold[1];
+} __attribute__((packed));
 
 /* SetNumericEffecterValue */
 
@@ -1415,6 +1466,35 @@ int decode_pldm_pdr_repository_change_record_data(
     uint8_t *event_data_operation, uint8_t *number_of_change_entries,
     size_t *change_entry_data_offset);
 
+/* set_numeric_sensor_enable */
+
+/** @brief Encode set_numeric_sensor_enable request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[in] rearm_event_state - true =  manually re-arm EventState after
+ *         responding to this request, false = no manual re-arm
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ *  @note	Caller is responsible for memory alloc and dealloc of param
+ * 		'msg.payload'
+ */
+int encode_set_numeric_sensor_enable_req(uint8_t instance_id, uint16_t sensor_id,
+				  uint8_t sensor_operational_state, uint8_t sensor_event_message_enable,
+				  struct pldm_msg *msg);
+
+/** @brief decode_set_numeric_sensor_enable response data
+ *
+ *  @param[in] msg - Request message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @return pldm_completion_codes
+ */
+
+int decode_set_numeric_sensor_enable_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
+
 /* GetSensorReading */
 
 /** @brief Encode GetSensorReading request data
@@ -1422,8 +1502,8 @@ int decode_pldm_pdr_repository_change_record_data(
  *  @param[in] instance_id - Message's instance id
  *  @param[in] sensor_id - A handle that is used to identify and access the
  *         sensor
- *  @param[in] rearm_event_state - true =  manually re-arm EventState after
- *         responding to this request, false = no manual re-arm
+ *  @param[in] sensor_operational_state
+ *  @param[in] sensor_event_message_enable
  *  @param[out] msg - Message will be written to this
  *  @return pldm_completion_codes
  *  @note	Caller is responsible for memory alloc and dealloc of param
@@ -1460,6 +1540,66 @@ int decode_get_sensor_reading_resp(
     uint8_t *sensor_event_message_enable, uint8_t *present_state,
     uint8_t *previous_state, uint8_t *event_state, uint8_t *present_reading);
 
+/* GetSensorThreshold */
+
+/** @brief Encode GetSensorThreshold request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ *  @note	Caller is responsible for memory alloc and dealloc of param
+ * 		'msg.payload'
+ */
+int encode_get_sensor_threshold_req(uint8_t instance_id, uint16_t sensor_id,
+				  struct pldm_msg *msg);
+
+/** @brief Decode GetSensorThreshold response data
+ *
+ *  @param[in] msg - Request message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @param[out] sensor_data_size - The bit width and format of reading and
+ *         threshold values
+ *  @param[out] thresholds - The threshold value indicated by the sensor
+ *  @return pldm_completion_codes
+ */
+
+int decode_get_sensor_threshold_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code,
+    uint8_t *sensor_data_size, uint8_t *thresholds);
+
+/* SetSensorThreshold */
+
+/** @brief Encode GetSensorThreshold request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ *  @note	Caller is responsible for memory alloc and dealloc of param
+ * 		'msg.payload'
+ */
+int encode_set_sensor_threshold_req(uint8_t instance_id,
+				 uint16_t sensor_id, uint8_t sensor_data_size,
+				 uint8_t *thresholds,
+				 struct pldm_msg *msg);
+
+/** @brief Decode GetSensorThreshold response data
+ *
+ *  @param[in] msg - Request message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @param[out] sensor_data_size - The bit width and format of reading and
+ *         threshold values
+ *  @param[out] thresholds - The threshold value indicated by the sensor
+ *  @return pldm_completion_codes
+ */
+
+int decode_set_sensor_threshold_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
 #ifdef __cplusplus
 }
 #endif

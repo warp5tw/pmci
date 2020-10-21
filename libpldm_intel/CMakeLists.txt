@@ -4,7 +4,7 @@ project (pldm_intel)
 
 option (BUILD_STANDALONE "Use outside of YOCTO depedencies system" OFF)
 
-set (BUILD_SHARED_LIBRARIES OFF)
+set (BUILD_SHARED_LIBRARIES ON)
 set (CMAKE_CXX_STANDARD 17)
 set (CMAKE_CXX_STANDARD_REQUIRED ON)
 

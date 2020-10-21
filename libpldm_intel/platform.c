@@ -1346,8 +1346,208 @@ int decode_pldm_pdr_repository_change_record_data(
 	return PLDM_SUCCESS;
 }
 
+int decode_set_sensor_threshold_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code)
+{
+	if (msg == NULL || completion_code == NULL)
+		return PLDM_ERROR_INVALID_DATA;
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length > PLDM_SET_NUMERIC_SENSOR_ENABLE_RESP_BYTES)
+		return PLDM_ERROR_INVALID_LENGTH;
+
+
+	return PLDM_SUCCESS;
+}
+
+int encode_set_sensor_threshold_req(uint8_t instance_id,
+				 uint16_t sensor_id, uint8_t sensor_data_size,
+				 uint8_t *thresholds,
+				 struct pldm_msg *msg)
+{
+	struct pldm_header_info header = {0};
+	int rc = PLDM_SUCCESS;
+
+	header.msg_type = PLDM_REQUEST;
+	header.instance = instance_id;
+	header.pldm_type = PLDM_PLATFORM;
+	header.command = PLDM_SET_SENSOR_THRESHOLD;
+
+	if (msg == NULL || thresholds == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (sensor_data_size > PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_sensor_threshold_req *request =
+	    (struct pldm_set_sensor_threshold_req *)msg->payload;
+
+	request->sensor_id = htole16(sensor_id);
+	request->sensor_data_size = sensor_data_size;
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT8 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT8) {
+		memcpy(request->thresholds, thresholds, 6);
+	}
+
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT16 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT16) {
+		memcpy(request->thresholds, thresholds, 2*6);
+	}
+
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT32 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		memcpy(request->thresholds, thresholds, 4*6);
+	}
+	return PLDM_SUCCESS;
+}
+
+int encode_get_sensor_threshold_req(uint8_t instance_id,
+				 uint16_t sensor_id,
+				 struct pldm_msg *msg)
+{
+	struct pldm_header_info header = {0};
+	int rc = PLDM_SUCCESS;
+
+	header.msg_type = PLDM_REQUEST;
+	header.instance = instance_id;
+	header.pldm_type = PLDM_PLATFORM;
+	header.command = PLDM_GET_SENSOR_THRESHOLD;
+
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_get_sensor_threshold_req *request =
+	    (struct pldm_get_sensor_threshold_req *)msg->payload;
+
+	request->sensor_id = htole16(sensor_id);
+
+	return PLDM_SUCCESS;
+}
+
+int decode_get_sensor_threshold_resp(const struct pldm_msg *msg, size_t payload_length,
+			uint8_t *completion_code, uint8_t *sensor_data_size,
+			uint8_t *thresholds)
+{
+	if (msg == NULL || completion_code == NULL ||
+		sensor_data_size == NULL || thresholds == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length < PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pldm_get_sensor_threshold_resp *response =
+	    (struct pldm_get_sensor_threshold_resp *)msg->payload;
+
+	*sensor_data_size = response->sensor_data_size;
+
+	if (*sensor_data_size > PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT8 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT8) {
+
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(thresholds, response->threshold, 6);
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT16 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT16) {
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES + 6) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(thresholds, response->threshold, 2*6);
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT32 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT32) {
+
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES + 18) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(thresholds, response->threshold, 4*6);
+	}
+	return PLDM_SUCCESS;
+}
+
+int encode_set_numeric_sensor_enable_req(uint8_t instance_id, uint16_t sensor_id,
+				  uint8_t sensor_operational_state, uint8_t sensor_event_message_enable,
+				  struct pldm_msg *msg)
+{
+	struct pldm_header_info header = {0};
+	int rc = PLDM_SUCCESS;
+
+	header.msg_type = PLDM_REQUEST;
+	header.instance = instance_id;
+	header.pldm_type = PLDM_PLATFORM;
+	header.command = PLDM_SET_NUMERIC_SENSOR_ENABLE;
+
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_numeric_sensor_enable_req *request =
+	    (struct pldm_set_numeric_sensor_enable_req *)msg->payload;
+
+	request->sensor_id = htole16(sensor_id);
+	request->sensor_operational_state = sensor_operational_state;
+	request->sensor_event_message_enable = sensor_event_message_enable;
+
+	return PLDM_SUCCESS;
+}
+
+int decode_set_numeric_sensor_enable_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code)
+{
+	if (msg == NULL || completion_code == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length > PLDM_SET_NUMERIC_SENSOR_ENABLE_RESP_BYTES) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	return PLDM_SUCCESS;
+}
+
 int encode_get_sensor_reading_req(uint8_t instance_id, uint16_t sensor_id,
-				  uint8_t rearm_event_state,
+				  bool8_t rearm_event_state,
 				  struct pldm_msg *msg)
 {
 	struct pldm_header_info header = {0};
@@ -1404,6 +1604,7 @@ int decode_get_sensor_reading_resp(
 	if (response->sensor_data_size > PLDM_SENSOR_DATA_SIZE_SINT32) {
 		return PLDM_ERROR_INVALID_DATA;
 	}
+
 	if (response->sensor_data_size > *sensor_data_size) {
 		return PLDM_ERROR_INVALID_LENGTH;
 	}
