@@ -478,6 +478,16 @@ void SMBusBinding::initEndpointDiscovery(ConfigurationVariant& conf)
                 smbusDeviceTable.push_back(
                     std::make_pair(rc.second, smbusBindingPvt));
             }
+            else if(smbusBindingPvt.slave_addr== 0xC2)
+            {
+                smbusDeviceTable.push_back(
+                    std::make_pair(0x09, smbusBindingPvt));
+            }
+            else if( smbusBindingPvt.slave_addr == 0xE2)
+            {//This is a PLDM I2C Slave device on NCT6681
+                smbusDeviceTable.push_back(
+                    std::make_pair(0x08, smbusBindingPvt));
+            }
         }
     });
 }
