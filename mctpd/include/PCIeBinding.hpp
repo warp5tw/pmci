@@ -25,4 +25,6 @@ class PCIeBinding : public MctpBinding
     boost::asio::posix::stream_descriptor streamMonitor;
     bool endpointDiscoveryFlow();
     void readResponse();
+    static void rxCTXMessage(uint8_t srcEid, void* data, void* msg,
+               size_t len, void* binding_private);
 };

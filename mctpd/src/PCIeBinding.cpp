@@ -119,6 +119,7 @@ void PCIeBinding::initializeBinding([[maybe_unused]] ConfigurationVariant& conf)
             std::make_error_code(static_cast<std::errc>(-status)));
     }
     mctp_set_rx_all(mctp, rxMessage, this);
+    mctp_set_rx_ctrl(mctp, rxCTXMessage, this);
     mctp_binding_set_tx_enabled(binding, true);
 
     int driverFd = mctp_nupcie_get_fd(pcie);
@@ -142,6 +143,101 @@ void PCIeBinding::initializeBinding([[maybe_unused]] ConfigurationVariant& conf)
             }
         });
     }
+}
+
+/*
+ * Declare unused parameters as "maybe_unused", since rxMessage is a callback
+ * passed to libmctp and we have to match its expected prototype.
+ */
+void PCIeBinding::rxCTXMessage(uint8_t srcEid, [[maybe_unused]] void* data, void* msg,
+               [[maybe_unused]] size_t len, [[maybe_unused]] void* binding_private)
+{
+    PCIeBinding* pThis = reinterpret_cast<PCIeBinding*>(data);
+    struct mctp_binding* binding = mctp_nupcie_core(pThis->pcie);
+    mctp_ctrl_msg_hdr* reqHeader = reinterpret_cast<mctp_ctrl_msg_hdr*>(msg);
+	struct mctp_nupcie_pkt_private *pkt_prv =
+        reinterpret_cast<struct mctp_nupcie_pkt_private *>(binding_private);
+    uint8_t cmd = reqHeader->command_code;
+    std::vector<uint8_t> resp = {};
+    reqHeader->rq_dgram_inst &= static_cast<uint8_t>(~(MCTP_CTRL_HDR_FLAG_REQUEST));
+
+    switch (cmd) {
+	case MCTP_CTRL_CMD_PREPARE_ENDPOINT_DISCOVERY:
+    {
+        fprintf(stderr, "PREPARE_ENDPOINT_DISCOVERY\n");
+        pThis->discoveredFlag = pcie_binding::DiscoveryFlags::Undiscovered;
+
+        resp.resize(sizeof(mctp_ctrl_resp_prepare_discovery));
+        mctp_ctrl_resp_prepare_discovery* respCmd =
+            reinterpret_cast<mctp_ctrl_resp_prepare_discovery*>(resp.data());
+
+	    memcpy(&respCmd->ctrl_hdr, reqHeader, sizeof(struct mctp_ctrl_msg_hdr));
+        respCmd->completion_code = 0;
+		pkt_prv->routing = PCIE_ROUTE_TO_RC;
+		pkt_prv->remote_id = 0x00;
+		break;
+    }
+	case MCTP_CTRL_CMD_ENDPOINT_DISCOVERY:
+    {
+        fprintf(stderr, "ENDPOINT_DISCOVERY\n");
+		if (pThis->discoveredFlag == pcie_binding::DiscoveryFlags::Discovered) {
+            fprintf(stderr, "Not handled becasue discovered %d \n", cmd);
+			return;
+		}
+        resp.resize(sizeof(mctp_ctrl_resp_endpoint_discovery));
+        mctp_ctrl_resp_endpoint_discovery* respCmd =
+            reinterpret_cast<mctp_ctrl_resp_endpoint_discovery*>(resp.data());
+
+	    memcpy(&respCmd->ctrl_hdr, reqHeader, sizeof(struct mctp_ctrl_msg_hdr));
+
+		pkt_prv->routing = PCIE_ROUTE_TO_RC;
+		pkt_prv->remote_id = 0x00;
+		break;
+    }
+	case MCTP_CTRL_CMD_GET_ENDPOINT_ID:
+    {
+        fprintf(stderr, "GET_ENDPOINT_ID\n");
+        resp.resize(sizeof(mctp_ctrl_resp_get_eid));
+        mctp_ctrl_resp_get_eid* respCmd =
+            reinterpret_cast<mctp_ctrl_resp_get_eid*>(resp.data());
+	    memcpy(&respCmd->ctrl_hdr, reqHeader, sizeof(struct mctp_ctrl_msg_hdr));
+	    mctp_ctrl_cmd_get_endpoint_id(binding->mctp, srcEid, false, respCmd);
+		pkt_prv->routing = PCIE_ROUTE_BY_ID;
+
+		break;
+    }
+	case MCTP_CTRL_CMD_SET_ENDPOINT_ID:
+    {
+        fprintf(stderr, "SET_ENDPOINT_ID\n");
+		if (pThis->discoveredFlag == pcie_binding::DiscoveryFlags::Discovered) {
+            fprintf(stderr, "Not handled becasue  discovered %d", cmd);
+			return;
+		}
+
+        resp.resize(sizeof(mctp_ctrl_resp_set_eid));
+        mctp_ctrl_resp_set_eid* respCmd =
+            reinterpret_cast<mctp_ctrl_resp_set_eid*>(resp.data());
+        memcpy(&respCmd->ctrl_hdr, reqHeader, sizeof(struct mctp_ctrl_msg_hdr));
+        mctp_ctrl_cmd_set_eid* req = reinterpret_cast<mctp_ctrl_cmd_set_eid*>(msg);
+
+        mctp_ctrl_cmd_set_endpoint_id(binding->mctp, srcEid,
+					   req, respCmd);
+
+		pThis->discoveredFlag = pcie_binding::DiscoveryFlags::Discovered;
+		pkt_prv->routing = PCIE_ROUTE_BY_ID;
+		break;
+    }
+	default:
+		fprintf(stderr, "Not handled %d", cmd);
+		return;
+	}
+
+#ifdef MCTP_ASTPCIE_RESPONSE_WA
+	pkt_prv->flags_seq_tag &= static_cast<uint8_t>(~(MCTP_HDR_FLAG_TO));
+#endif
+
+    mctp_message_tx(binding->mctp, srcEid, resp.data(), resp.size(), static_cast<void*>(pkt_prv));
+
 }
 
 PCIeBinding::~PCIeBinding()
