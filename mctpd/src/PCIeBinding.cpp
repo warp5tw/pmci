@@ -2,6 +2,8 @@
 
 #include <phosphor-logging/log.hpp>
 
+using variant = std::variant<uint8_t, uint16_t, bool, std::string>;
+
 PCIeBinding::PCIeBinding(std::shared_ptr<object_server>& objServer,
                          std::string& objPath, ConfigurationVariant& conf,
                          boost::asio::io_context& ioc) :
@@ -38,6 +40,64 @@ PCIeBinding::PCIeBinding(std::shared_ptr<object_server>& objServer,
             phosphor::logging::entry("Exception:", e.what()));
         throw;
     }
+}
+
+void PCIeBinding::Eid(uint8_t value)
+{
+    conn->async_method_call(
+        [](boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "failed to set Eid\n";
+            }
+        },
+        "xyz.openbmc_project.MCTP-pcie",
+        "/xyz/openbmc_project/mctp",
+        "org.freedesktop.DBus.Properties", "Set",
+        "xyz.openbmc_project.MCTP.Base", "Eid", variant(value));
+
+    conn->async_method_call(
+        [](boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "failed to set StaticEid\n";
+            }
+        },
+        "xyz.openbmc_project.MCTP-pcie",
+        "/xyz/openbmc_project/mctp",
+        "org.freedesktop.DBus.Properties", "Set",
+        "xyz.openbmc_project.MCTP.Base", "StaticEid", variant(false));
+
+}
+
+void PCIeBinding::DiscoveredFlag(std::string value)
+{
+    conn->async_method_call(
+        [](boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "failed to set StaticEid\n";
+            }
+        },
+        "xyz.openbmc_project.MCTP-pcie",
+        "/xyz/openbmc_project/mctp",
+        "org.freedesktop.DBus.Properties", "Set",
+        "xyz.openbmc_project.MCTP.Binding.PCIe", "DiscoveredFlag", variant(value));
+}
+
+void PCIeBinding::Bdf(uint16_t value)
+{
+    conn->async_method_call(
+        [](boost::system::error_code ec) {
+            if (ec)
+            {
+                std::cerr << "failed to set StaticEid\n";
+            }
+        },
+        "xyz.openbmc_project.MCTP-pcie",
+        "/xyz/openbmc_project/mctp",
+        "org.freedesktop.DBus.Properties", "Set",
+        "xyz.openbmc_project.MCTP.Binding.PCIe", "BDF", variant(value));
 }
 
 bool PCIeBinding::endpointDiscoveryFlow()
@@ -175,6 +235,7 @@ void PCIeBinding::rxCTXMessage(uint8_t srcEid, [[maybe_unused]] void* data, void
         respCmd->completion_code = 0;
 		pkt_prv->routing = PCIE_ROUTE_TO_RC;
 		pkt_prv->remote_id = 0x00;
+		pThis->DiscoveredFlag(pcie_binding::convertDiscoveryFlagsToString(pThis->discoveredFlag));
 		break;
     }
 	case MCTP_CTRL_CMD_ENDPOINT_DISCOVERY:
@@ -225,6 +286,10 @@ void PCIeBinding::rxCTXMessage(uint8_t srcEid, [[maybe_unused]] void* data, void
 
 		pThis->discoveredFlag = pcie_binding::DiscoveryFlags::Discovered;
 		pkt_prv->routing = PCIE_ROUTE_BY_ID;
+		pThis->DiscoveredFlag(pcie_binding::convertDiscoveryFlagsToString(pThis->discoveredFlag));
+		pThis->Eid(req->eid);
+		pThis->bdf = pkt_prv->own_id;
+		pThis->Bdf(pThis->bdf);
 		break;
     }
 	default:

@@ -27,4 +27,7 @@ class PCIeBinding : public MctpBinding
     void readResponse();
     static void rxCTXMessage(uint8_t srcEid, void* data, void* msg,
                size_t len, void* binding_private);
+    void Eid(uint8_t value);
+    void DiscoveredFlag(std::string value);
+    void Bdf(uint16_t value);
 };

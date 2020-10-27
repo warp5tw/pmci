@@ -154,7 +154,7 @@ class MctpBinding
     void registerProperty(Interface ifc, const std::string& name,
                           const PropertyType& property,
                           sdbusplus::asio::PropertyPermission access =
-                              sdbusplus::asio::PropertyPermission::readOnly)
+                              sdbusplus::asio::PropertyPermission::readWrite)
     {
         if (ifc->register_property(name, property, access) != true)
         {
