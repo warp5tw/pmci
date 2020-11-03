@@ -1497,6 +1497,158 @@ int decode_get_sensor_threshold_resp(const struct pldm_msg *msg, size_t payload_
 	return PLDM_SUCCESS;
 }
 
+
+int decode_set_sensor_hysteresis_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code)
+{
+	if (msg == NULL || completion_code == NULL)
+		return PLDM_ERROR_INVALID_DATA;
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length > PLDM_SET_NUMERIC_SENSOR_ENABLE_RESP_BYTES)
+		return PLDM_ERROR_INVALID_LENGTH;
+
+
+	return PLDM_SUCCESS;
+}
+
+int encode_set_sensor_hysteresis_req(uint8_t instance_id,
+				 uint16_t sensor_id, uint8_t sensor_data_size,
+				 uint8_t *hysteresis,
+				 struct pldm_msg *msg)
+{
+	struct pldm_header_info header = {0};
+	int rc = PLDM_SUCCESS;
+
+	header.msg_type = PLDM_REQUEST;
+	header.instance = instance_id;
+	header.pldm_type = PLDM_PLATFORM;
+	header.command = PLDM_SET_SENSOR_HYSTERESIS;
+
+	if (msg == NULL || hysteresis == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (sensor_data_size > PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_sensor_hysteresis_req *request =
+	    (struct pldm_set_sensor_threshold_req *)msg->payload;
+
+	request->sensor_id = htole16(sensor_id);
+	request->sensor_data_size = sensor_data_size;
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT8 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT8) {
+		memcpy(request->hysteresis, hysteresis, 1);
+	}
+
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT16 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT16) {
+		memcpy(request->hysteresis, hysteresis, 2);
+	}
+
+	if (sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT32 ||
+		sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		memcpy(request->hysteresis, hysteresis, 4);
+	}
+	return PLDM_SUCCESS;
+}
+
+int encode_get_sensor_hysteresis_req(uint8_t instance_id,
+				 uint16_t sensor_id,
+				 struct pldm_msg *msg)
+{
+	struct pldm_header_info header = {0};
+	int rc = PLDM_SUCCESS;
+
+	header.msg_type = PLDM_REQUEST;
+	header.instance = instance_id;
+	header.pldm_type = PLDM_PLATFORM;
+	header.command = PLDM_GET_SENSOR_HYSTERESIS;
+
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_get_sensor_hysteresis_req *request =
+	    (struct pldm_get_sensor_hysteresis_req *)msg->payload;
+
+	request->sensor_id = htole16(sensor_id);
+
+	return PLDM_SUCCESS;
+}
+
+int decode_get_sensor_hysteresis_resp(const struct pldm_msg *msg, size_t payload_length,
+			uint8_t *completion_code, uint8_t *sensor_data_size,
+			uint8_t *hysteresis)
+{
+	if (msg == NULL || completion_code == NULL ||
+		sensor_data_size == NULL || hysteresis == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length < PLDM_GET_NUMERIC_SENSOR_HYSTERESIS_MIN_RSP_BYTES) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pldm_get_sensor_hysteresis_resp *response =
+	    (struct pldm_get_sensor_hysteresis_resp *)msg->payload;
+
+	*sensor_data_size = response->sensor_data_size;
+
+	if (*sensor_data_size > PLDM_EFFECTER_DATA_SIZE_SINT32) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT8 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT8) {
+
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_HYSTERESIS_MIN_RSP_BYTES) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(hysteresis, response->hysteresis, 1);
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT16 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT16) {
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_HYSTERESIS_MIN_RSP_BYTES + 1) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(hysteresis, response->hysteresis, 2);
+	}
+
+	if (*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_UINT32 ||
+		*sensor_data_size == PLDM_EFFECTER_DATA_SIZE_SINT32) {
+
+		if (payload_length !=
+			PLDM_GET_NUMERIC_SENSOR_HYSTERESIS_MIN_RSP_BYTES + 2) {
+			return PLDM_ERROR_INVALID_LENGTH;
+		}
+		memcpy(hysteresis, response->hysteresis, 4);
+	}
+	return PLDM_SUCCESS;
+}
+
 int encode_set_numeric_sensor_enable_req(uint8_t instance_id, uint16_t sensor_id,
 				  uint8_t sensor_operational_state, uint8_t sensor_event_message_enable,
 				  struct pldm_msg *msg)

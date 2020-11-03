@@ -29,7 +29,7 @@ extern "C" {
 #define PLDM_GET_SENSOR_READING_MIN_RESP_BYTES 8
 #define PLDM_GET_STATE_SENSOR_READINGS_MIN_RESP_BYTES 2
 #define PLDM_GET_NUMERIC_SENSOR_THRESHOLD_MIN_RSP_BYTES 8
-
+#define PLDM_GET_NUMERIC_SENSOR_HYSTERESIS_MIN_RSP_BYTES 3
 /* Minimum length for PLDM PlatformEventMessage request */
 #define PLDM_PLATFORM_EVENT_MESSAGE_MIN_REQ_BYTES 3
 #define PLDM_PLATFORM_EVENT_MESSAGE_STATE_SENSOR_STATE_REQ_BYTES 6
@@ -110,14 +110,24 @@ enum pldm_effecter_oper_state {
 };
 
 enum pldm_platform_commands {
+	//Terminus commands
+	PLDM_SETTID = 0x1,
+	PLDM_GETTID = 0x2,
+	//Numeric Sensor commands
 	PLDM_SET_NUMERIC_SENSOR_ENABLE = 0x10,
 	PLDM_GET_SENSOR_READING = 0x11,
 	PLDM_GET_SENSOR_THRESHOLD = 0x12,
 	PLDM_SET_SENSOR_THRESHOLD = 0x13,
+	PLDM_GET_SENSOR_HYSTERESIS = 0x15,
+	PLDM_SET_SENSOR_HYSTERESIS = 0x16,
+	//State Sensor commands
 	PLDM_GET_STATE_SENSOR_READINGS = 0x21,
+	//PLDM Effecter commands
 	PLDM_SET_NUMERIC_EFFECTER_VALUE = 0x31,
 	PLDM_GET_NUMERIC_EFFECTER_VALUE = 0x32,
 	PLDM_SET_STATE_EFFECTER_STATES = 0x39,
+	//PLDM Event Log commands
+	//PDR Repository commands
 	PLDM_GET_PDR = 0x51,
 	PLDM_PLATFORM_EVENT_MESSAGE = 0x0A
 };
@@ -728,9 +738,9 @@ struct pldm_get_sensor_reading_resp {
 
 /* Responder */
 
-/** @struct pldm_set_sensor_reading_req
+/** @struct pldm_set_sensor_threshold_req
  *
- *  Structure representing PLDM get sensor reading request
+ *  Structure representing PLDM set sensor threshold request
  */
 struct pldm_set_sensor_threshold_req {
 	uint16_t sensor_id;
@@ -738,9 +748,9 @@ struct pldm_set_sensor_threshold_req {
 	uint8_t thresholds[1];
 } __attribute__((packed));
 
-/** @struct pldm_get_sensor_threshold_resp
+/** @struct pldm_set_sensor_threshold_resp
  *
- *  Structure representing PLDM get sensor threshold response
+ *  Structure representing PLDM set sensor threshold response
  */
 struct pldm_set_sensor_threshold_resp {
 	uint8_t completion_code;
@@ -763,6 +773,43 @@ struct pldm_get_sensor_threshold_resp {
 	uint8_t completion_code;
 	uint8_t sensor_data_size;
 	uint8_t threshold[1];
+} __attribute__((packed));
+
+/** @struct pldm_set_sensor_hysteresis_req
+ *
+ *  Structure representing PLDM set sensor hysteresis request
+ */
+struct pldm_set_sensor_hysteresis_req {
+	uint16_t sensor_id;
+	uint8_t sensor_data_size;
+	uint8_t hysteresis[1];
+} __attribute__((packed));
+
+/** @struct pldm_set_sensor_hysteresis_resp
+ *
+ *  Structure representing PLDM set sensor hysteresis response
+ */
+struct pldm_set_sensor_hysteresis_resp {
+	uint8_t completion_code;
+} __attribute__((packed));
+
+
+/** @struct pldm_get_sensor_hysteresis_req
+ *
+ *  Structure representing PLDM get sensor hysteresis request
+ */
+struct pldm_get_sensor_hysteresis_req {
+	uint16_t sensor_id;
+} __attribute__((packed));
+
+/** @struct pldm_get_sensor_hysteresis_resp
+ *
+ *  Structure representing PLDM get sensor hysteresis response
+ */
+struct pldm_get_sensor_hysteresis_resp {
+	uint8_t completion_code;
+	uint8_t sensor_data_size;
+	uint8_t hysteresis[1];
 } __attribute__((packed));
 
 /* SetNumericEffecterValue */
@@ -1599,6 +1646,67 @@ int encode_set_sensor_threshold_req(uint8_t instance_id,
  */
 
 int decode_set_sensor_threshold_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
+
+/* GetSensorHysteresis */
+
+/** @brief Encode GetSensorHysteresis request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ *  @note	Caller is responsible for memory alloc and dealloc of param
+ * 		'msg.payload'
+ */
+int encode_get_sensor_hysteresis_req(uint8_t instance_id, uint16_t sensor_id,
+				  struct pldm_msg *msg);
+
+/** @brief Decode GetSensorHysteresis response data
+ *
+ *  @param[in] msg - Request message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @param[out] sensor_data_size - The bit width and format of reading and
+ *         hysteresis values
+ *  @param[out] hysteresis - The hysteresis value indicated by the sensor
+ *  @return pldm_completion_codes
+ */
+
+int decode_get_sensor_hysteresis_resp(
+    const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code,
+    uint8_t *sensor_data_size, uint8_t *hysteresis);
+
+/* SetSensorThreshold */
+
+/** @brief Encode SetSensorHysteresis request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[in] ssensor_data_size - The bit width and format of reading and
+ *         hysteresis values
+ *  @param[in] hysteresis - The hysteresis value indicated by the sensor
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ *  @note	Caller is responsible for memory alloc and dealloc of param
+ * 		'msg.payload'
+ */
+int encode_set_sensor_hysteresis_req(uint8_t instance_id,
+				 uint16_t sensor_id, uint8_t sensor_data_size,
+				 uint8_t *hysteresis,
+				 struct pldm_msg *msg);
+
+/** @brief Decode GetSensorHysteresis response data
+ *
+ *  @param[in] msg - Request message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @return pldm_completion_codes
+ */
+
+int decode_set_sensor_hysteresis_resp(
     const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
 #ifdef __cplusplus
 }
