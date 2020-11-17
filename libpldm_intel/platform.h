@@ -52,6 +52,12 @@ extern "C" {
 #define PLDM_INVALID_EFFECTER_ID 0xFFFF
 #define PLDM_TID_RESERVED 0xFF
 
+enum pldm_pdr_repository_state {
+	PLDM_PDR_REPOSITORY_STATE_AVAILABLE,
+	PLDM_PDR_REPOSITORY_STATE_UPDATE_IN_PROGRESS,
+	PLDM_PDR_REPOSITORY_STATE_FAILED
+};
+
 enum pldm_effecter_data_size {
 	PLDM_EFFECTER_DATA_SIZE_UINT8,
 	PLDM_EFFECTER_DATA_SIZE_SINT8,
@@ -126,8 +132,7 @@ enum pldm_platform_commands {
 	PLDM_SET_NUMERIC_EFFECTER_VALUE = 0x31,
 	PLDM_GET_NUMERIC_EFFECTER_VALUE = 0x32,
 	PLDM_SET_STATE_EFFECTER_STATES = 0x39,
-	//PLDM Event Log commands
-	//PDR Repository commands
+	PLDM_GET_PDR_REPOSITORY_INFO = 0x50,
 	PLDM_GET_PDR = 0x51,
 	PLDM_PLATFORM_EVENT_MESSAGE = 0x0A
 };
@@ -321,6 +326,18 @@ struct pldm_pdr_entity_association {
 	pldm_entity container;
 	uint8_t num_children;
 	pldm_entity children[1];
+} __attribute__((packed));
+
+/** @struct pldm_pdr_entity_auxiliary_names
+ *
+ *  Structure representing PLDM Entity Auxiliary Names PDR
+ */
+struct pldm_pdr_entity_auxiliary_names {
+	struct pldm_pdr_hdr hdr;
+	pldm_entity container;
+	uint8_t shared_name_count;
+	uint8_t name_string_count;
+	uint8_t entity_auxiliary_names[1];
 } __attribute__((packed));
 
 /** @struct pldm_pdr_fru_record_set
@@ -734,6 +751,29 @@ struct pldm_get_sensor_reading_resp {
 	uint8_t previous_state;
 	uint8_t event_state;
 	uint8_t present_reading[1];
+} __attribute__((packed));
+
+/** @struct pldm_pdr_repository_info
+ *
+ *  Structure representing PLDM PDRRepositoryInfo
+ */
+struct pldm_pdr_repository_info {
+	uint8_t repository_state;
+	timestamp104_t update_time;
+	timestamp104_t oem_update_time;
+	uint32_t record_count;
+	uint32_t repository_size;
+	uint32_t largest_record_size;
+	uint8_t data_transfer_handle_timeout;
+} __attribute__((packed));
+
+/** @struct pldm_get_pdr_repository_info_resp
+ *
+ *  Structure representing PLDM GetPDRRepositoryInfo response
+ */
+struct pldm_get_pdr_repository_info_resp {
+	uint8_t completion_code;
+	struct pldm_pdr_repository_info pdr_repo_info;
 } __attribute__((packed));
 
 /* Responder */
@@ -1587,6 +1627,7 @@ int decode_get_sensor_reading_resp(
     uint8_t *sensor_event_message_enable, uint8_t *present_state,
     uint8_t *previous_state, uint8_t *event_state, uint8_t *present_reading);
 
+<<<<<<< HEAD
 /* GetSensorThreshold */
 
 /** @brief Encode GetSensorThreshold request data
@@ -1708,6 +1749,28 @@ int encode_set_sensor_hysteresis_req(uint8_t instance_id,
 
 int decode_set_sensor_hysteresis_resp(
     const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
+=======
+/** @brief Encode GetPDRRepositoryInfo request data
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ */
+int encode_get_pdr_repository_info_req(uint8_t instance_id,
+				       struct pldm_msg *msg);
+
+/** @brief Decode GetPDRRepositoryInfo response data
+ *
+ *  @param[in] msg - Response message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] pdr_info - PDR repository metadata
+ *  @return pldm_completion_codes
+ */
+int decode_get_pdr_repository_info_resp(
+    const struct pldm_msg *msg, const size_t payload_length,
+    struct pldm_get_pdr_repository_info_resp *pdr_info);
+
+>>>>>>> cea7a943012187041c95c6b047a44c9277b7f225
 #ifdef __cplusplus
 }
 #endif

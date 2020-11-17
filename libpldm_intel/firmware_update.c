@@ -105,19 +105,16 @@ int encode_get_firmware_parameters_req(const uint8_t instance_id,
 	return PLDM_SUCCESS;
 }
 
-int decode_get_firmware_parameters_resp(
+int decode_get_firmware_parameters_comp_img_set_resp(
     const struct pldm_msg *msg, const size_t payload_length,
-    uint8_t *completion_code, struct get_firmware_parameters_resp *resp_data,
+    struct get_firmware_parameters_resp *resp_data,
     struct variable_field *active_comp_image_set_ver_str,
-    struct variable_field *pending_comp_image_set_ver_str,
-    struct component_parameter_table *component_data,
-    struct variable_field *active_comp_ver_str,
-    struct variable_field *pending_comp_ver_str)
+    struct variable_field *pending_comp_image_set_ver_str)
 {
-	if (msg == NULL || completion_code == NULL || resp_data == NULL ||
+	if (msg == NULL || resp_data == NULL ||
 	    active_comp_image_set_ver_str == NULL ||
-	    pending_comp_image_set_ver_str == NULL || component_data == NULL ||
-	    active_comp_ver_str == NULL || pending_comp_ver_str == NULL) {
+	    pending_comp_image_set_ver_str == NULL) {
+
 		return PLDM_ERROR_INVALID_DATA;
 	}
 
@@ -127,13 +124,12 @@ int decode_get_firmware_parameters_resp(
 		return PLDM_ERROR_INVALID_LENGTH;
 	}
 
-	*completion_code = msg->payload[0];
-	if (PLDM_SUCCESS != *completion_code) {
-		return *completion_code;
-	}
-
 	struct get_firmware_parameters_resp *response =
 	    (struct get_firmware_parameters_resp *)msg->payload;
+
+	if (PLDM_SUCCESS != response->completion_code) {
+		return response->completion_code;
+	}
 
 	if (response->active_comp_image_set_ver_str_len == 0) {
 		return PLDM_ERROR_INVALID_DATA;
@@ -143,29 +139,18 @@ int decode_get_firmware_parameters_resp(
 			  response->active_comp_image_set_ver_str_len +
 			  response->pending_comp_image_set_ver_str_len;
 
-	if (payload_length <
-	    resp_len + sizeof(struct component_parameter_table)) {
-		return PLDM_ERROR_INVALID_LENGTH;
-	}
-
-	struct component_parameter_table *component_resp =
-	    (struct component_parameter_table *)(msg->payload + resp_len);
-
-	if (component_resp->active_comp_ver_str_len == 0) {
-		return PLDM_ERROR_INVALID_LENGTH;
-	}
-
-	resp_len += sizeof(struct component_parameter_table) +
-		    component_resp->active_comp_ver_str_len +
-		    component_resp->pending_comp_ver_str_len;
-
-	if (payload_length != resp_len) {
+	if (payload_length < resp_len) {
 		return PLDM_ERROR_INVALID_LENGTH;
 	}
 
 	resp_data->capabilities_during_update =
 	    htole32(response->capabilities_during_update);
 	resp_data->comp_count = htole16(response->comp_count);
+
+	if (resp_data->comp_count == 0) {
+		return PLDM_ERROR;
+	}
+
 	resp_data->active_comp_image_set_ver_str_type =
 	    response->active_comp_image_set_ver_str_type;
 	resp_data->active_comp_image_set_ver_str_len =
@@ -175,31 +160,49 @@ int decode_get_firmware_parameters_resp(
 	resp_data->pending_comp_image_set_ver_str_len =
 	    response->pending_comp_image_set_ver_str_len;
 
-	// 1 extra byte for appending null at the end
-	if (active_comp_image_set_ver_str->length <
-	    response->active_comp_image_set_ver_str_len + 1) {
-		return PLDM_ERROR;
-	}
-	memset(active_comp_image_set_ver_str->ptr, 0,
-	       active_comp_image_set_ver_str->length);
-	memcpy(active_comp_image_set_ver_str->ptr,
-	       msg->payload + sizeof(struct get_firmware_parameters_resp),
-	       resp_data->active_comp_image_set_ver_str_len);
+	active_comp_image_set_ver_str->ptr =
+	    msg->payload + sizeof(struct get_firmware_parameters_resp);
+	active_comp_image_set_ver_str->length =
+	    resp_data->active_comp_image_set_ver_str_len;
 
 	if (resp_data->pending_comp_image_set_ver_str_len != 0) {
-		// 1 extra byte for appending null at the end
-		if (pending_comp_image_set_ver_str->length <
-		    response->pending_comp_image_set_ver_str_len + 1) {
-			return PLDM_ERROR;
-		}
+		pending_comp_image_set_ver_str->ptr =
+		    msg->payload + sizeof(struct get_firmware_parameters_resp) +
+		    resp_data->active_comp_image_set_ver_str_len;
+		pending_comp_image_set_ver_str->length =
+		    resp_data->pending_comp_image_set_ver_str_len;
+	}
 
-		memset(pending_comp_image_set_ver_str->ptr, 0,
-		       pending_comp_image_set_ver_str->length);
-		memcpy(pending_comp_image_set_ver_str->ptr,
-		       msg->payload +
-			   sizeof(struct get_firmware_parameters_resp) +
-			   resp_data->active_comp_image_set_ver_str_len,
-		       resp_data->pending_comp_image_set_ver_str_len);
+	return PLDM_SUCCESS;
+}
+
+int decode_get_firmware_parameters_comp_resp(
+    uint8_t *msg, const size_t payload_length,
+    struct component_parameter_table *component_data,
+    struct variable_field *active_comp_ver_str,
+    struct variable_field *pending_comp_ver_str)
+{
+	if (msg == NULL || component_data == NULL ||
+	    active_comp_ver_str == NULL || pending_comp_ver_str == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (payload_length < sizeof(struct component_parameter_table)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct component_parameter_table *component_resp =
+	    (struct component_parameter_table *)(msg);
+	if (component_resp->active_comp_ver_str_len == 0) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	size_t resp_len = sizeof(struct component_parameter_table) +
+			  component_resp->active_comp_ver_str_len +
+			  component_resp->pending_comp_ver_str_len;
+
+	if (payload_length < resp_len) {
+		return PLDM_ERROR_INVALID_LENGTH;
 	}
 
 	component_data->comp_classification =
@@ -229,37 +232,411 @@ int decode_get_firmware_parameters_resp(
 	component_data->capabilities_during_update =
 	    htole16(component_resp->capabilities_during_update);
 
-	// 1 extra byte for appending null at the end
-	if (active_comp_ver_str->length <
-	    component_resp->active_comp_ver_str_len + 1) {
-		return PLDM_ERROR;
-	}
-	memset(active_comp_ver_str->ptr, 0, active_comp_ver_str->length);
-	memcpy(active_comp_ver_str->ptr,
-	       msg->payload + sizeof(struct get_firmware_parameters_resp) +
-		   response->active_comp_image_set_ver_str_len +
-		   response->pending_comp_image_set_ver_str_len +
-		   sizeof(struct component_parameter_table),
-	       component_resp->active_comp_ver_str_len);
+	active_comp_ver_str->ptr =
+	    msg + sizeof(struct component_parameter_table);
+	active_comp_ver_str->length = component_resp->active_comp_ver_str_len;
 
 	if (component_resp->pending_comp_ver_str_len != 0) {
-		// 1 extra byte for appending null at the end
-		if (pending_comp_ver_str->length <
-		    component_resp->pending_comp_ver_str_len + 1) {
-			return PLDM_ERROR;
-		}
 
-		memset(pending_comp_ver_str->ptr, 0,
-		       pending_comp_ver_str->length);
-		memcpy(pending_comp_ver_str->ptr,
-		       msg->payload +
-			   sizeof(struct get_firmware_parameters_resp) +
-			   response->active_comp_image_set_ver_str_len +
-			   response->pending_comp_image_set_ver_str_len +
-			   sizeof(struct component_parameter_table) +
-			   component_resp->active_comp_ver_str_len,
-		       component_resp->pending_comp_ver_str_len);
+		pending_comp_ver_str->ptr =
+		    msg + sizeof(struct component_parameter_table) +
+		    component_resp->active_comp_ver_str_len;
+		pending_comp_ver_str->length =
+		    component_resp->pending_comp_ver_str_len;
 	}
+	return PLDM_SUCCESS;
+}
+
+/*RequestUpdate Encode Request API */
+int encode_request_update_req(const uint8_t instance_id, struct pldm_msg *msg,
+			      const size_t payload_length,
+			      struct request_update_req *data,
+			      struct variable_field *comp_img_set_ver_str)
+{
+	if (msg == NULL || data == NULL || comp_img_set_ver_str == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	struct pldm_header_info header = {0};
+	header.instance = instance_id;
+	header.msg_type = PLDM_REQUEST;
+	header.pldm_type = PLDM_FWU;
+	header.command = PLDM_REQUEST_UPDATE;
+	pack_pldm_header(&header, &(msg->hdr));
+
+	int rc = pack_pldm_header(&header, &(msg->hdr));
+	if (PLDM_SUCCESS != rc) {
+		return rc;
+	}
+
+	if (payload_length < sizeof(struct request_update_req)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	memcpy(msg->payload, data, sizeof(struct request_update_req));
+
+	if (payload_length <
+	    sizeof(struct request_update_req) + comp_img_set_ver_str->length) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	if (comp_img_set_ver_str->ptr == NULL) {
+		return PLDM_ERROR;
+	}
+	memcpy(msg->payload + sizeof(struct request_update_req),
+	       comp_img_set_ver_str->ptr, comp_img_set_ver_str->length);
+
+	return PLDM_SUCCESS;
+}
+
+/*RequestUpdate decode Response API */
+int decode_request_update_resp(const struct pldm_msg *msg,
+			       const size_t payload_length,
+			       uint8_t *completion_code,
+			       uint16_t *fd_meta_data_len, uint8_t *fd_pkg_data)
+{
+	if (msg == NULL || completion_code == NULL ||
+	    fd_meta_data_len == NULL || fd_pkg_data == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+	if (PLDM_SUCCESS != *completion_code) {
+		return *completion_code;
+	}
+	size_t resp_len = sizeof(struct request_update_resp);
+
+	if (payload_length != resp_len) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+	struct request_update_resp *response =
+	    (struct request_update_resp *)msg->payload;
+	*fd_meta_data_len = htole16(response->fd_meta_data_len);
+
+	*fd_pkg_data = response->fd_pkg_data;
+
+	return PLDM_SUCCESS;
+}
+
+int encode_get_device_meta_data_req(const uint8_t instance_id,
+				    struct pldm_msg *msg,
+				    const size_t payload_length,
+				    const uint32_t data_transfer_handle,
+				    const uint8_t transfer_operation_flag)
+{
+	if (msg == NULL || data_transfer_handle == NULL ||
+	    transfer_operation_flag == NULL || msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (payload_length != sizeof(struct get_device_meta_data_req)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pldm_header_info header = {0};
+	header.instance = instance_id;
+	header.msg_type = PLDM_REQUEST;
+	header.pldm_type = PLDM_FWU;
+	header.command = PLDM_GET_DEVICE_META_DATA;
+
+	int rc = pack_pldm_header(&header, &(msg->hdr));
+	if (PLDM_SUCCESS != rc) {
+		return rc;
+	}
+
+	struct get_device_meta_data_req *request =
+	    (struct get_device_meta_data_req *)msg->payload;
+
+	request->data_transfer_handle = htole32(data_transfer_handle);
+
+	if (!check_transfer_operation_flag_valid(transfer_operation_flag)) {
+		return PLDM_INVALID_TRANSFER_OPERATION_FLAG;
+	}
+
+	request->transfer_operation_flag = transfer_operation_flag;
+
+	return PLDM_SUCCESS;
+}
+
+int decode_get_device_meta_data_resp(
+    const struct pldm_msg *msg, const size_t payload_length,
+    uint8_t *completion_code, uint32_t *next_data_transfer_handle,
+    uint8_t *transfer_flag, struct variable_field *portion_of_meta_data)
+{
+	if (msg == NULL || completion_code == NULL ||
+	    next_data_transfer_handle == NULL || transfer_flag == NULL ||
+	    portion_of_meta_data == NULL || msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+
+	if (*completion_code != PLDM_SUCCESS) {
+		return *completion_code;
+	}
+
+	if (payload_length < sizeof(struct get_device_meta_data_resp)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct get_device_meta_data_resp *response =
+	    (struct get_device_meta_data_resp *)msg->payload;
+
+	*next_data_transfer_handle =
+	    le32toh(response->next_data_transfer_handle);
+
+	if (!check_transfer_flag_valid(response->transfer_flag)) {
+		return PLDM_INVALID_TRANSFER_OPERATION_FLAG;
+	}
+
+	*transfer_flag = response->transfer_flag;
+
+	portion_of_meta_data->ptr =
+	    msg->payload + sizeof(struct get_device_meta_data_resp);
+	portion_of_meta_data->length =
+	    payload_length - sizeof(struct get_device_meta_data_resp);
+
+	return PLDM_SUCCESS;
+}
+
+int encode_activate_firmware_req(const uint8_t instance_id,
+				 struct pldm_msg *msg,
+				 const size_t payload_length,
+				 const bool8_t self_contained_activation_req)
+{
+	if (msg == NULL || self_contained_activation_req == NULL ||
+	    msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (payload_length != sizeof(struct activate_firmware_req)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pldm_header_info header = {0};
+	header.instance = instance_id;
+	header.msg_type = PLDM_REQUEST;
+	header.pldm_type = PLDM_FWU;
+	header.command = PLDM_ACTIVATE_FIRMWARE;
+
+	int rc = pack_pldm_header(&header, &(msg->hdr));
+	if (PLDM_SUCCESS != rc) {
+		return rc;
+	}
+
+	struct activate_firmware_req *request =
+	    (struct activate_firmware_req *)msg->payload;
+
+	if (self_contained_activation_req !=
+		NOT_CONTAINING_SELF_ACTIVATED_COMPONENTS &&
+	    self_contained_activation_req !=
+		CONTAINS_SELF_ACTIVATED_COMPONENTS) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	request->self_contained_activation_req = self_contained_activation_req;
+
+	return PLDM_SUCCESS;
+}
+
+int decode_activate_firmware_resp(const struct pldm_msg *msg,
+				  const size_t payload_length,
+				  uint8_t *completion_code,
+				  uint16_t *estimated_time_activation)
+{
+	if (msg == NULL || completion_code == NULL ||
+	    estimated_time_activation == NULL || msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+
+	if (*completion_code != PLDM_SUCCESS) {
+		return *completion_code;
+	}
+
+	if (payload_length != sizeof(struct activate_firmware_resp)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct activate_firmware_resp *response =
+	    (struct activate_firmware_resp *)msg->payload;
+
+	*estimated_time_activation =
+	    le32toh(response->estimated_time_activation);
+
+	return PLDM_SUCCESS;
+}
+
+/*PassComponentTable*/
+
+/** @brief Check whether Component Classification is valid
+ *
+ *  @return true if is from below mentioned values, false if not
+ */
+static bool check_comp_classification_valid(const uint16_t comp_classification)
+{
+	switch (comp_classification) {
+	case COMP_UNKNOWN:
+	case COMP_OTHER:
+	case COMP_DRIVER:
+	case COMP_CONFIGURATION_SOFTWARE:
+	case COMP_APPLICATION_SOFTWARE:
+	case COMP_INSTRUMENTATION:
+	case COMP_FIRMWARE_OR_BIOS:
+	case COMP_DIAGNOSTIC_SOFTWARE:
+	case COMP_OPERATING_SYSTEM:
+	case COMP_MIDDLEWARE:
+	case COMP_FIRMWARE:
+	case COMP_BIOS_OR_FCODE:
+	case COMP_SUPPORT_OR_SERVICEPACK:
+	case COMP_SOFTWARE_BUNDLE:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/** @brief Check whether Component Version String Type is valid
+ *
+ *  @return true if is from below mentioned values, false if not
+ */
+static bool check_comp_ver_str_type_valid(const uint8_t comp_ver_str_type)
+{
+	switch (comp_ver_str_type) {
+	case COMP_VER_STR_TYPE_UNKNOWN:
+	case COMP_ASCII:
+	case COMP_UTF_8:
+	case COMP_UTF_16:
+	case COMP_UTF_16LE:
+	case COMP_UTF_16BE:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/** @brief Check whether Component Response Code is valid
+ *
+ *  @return true if is from below mentioned values, false if not
+ */
+static bool check_resp_code_valid(const uint8_t comp_resp_code)
+{
+	switch (comp_resp_code) {
+	case COMP_CAN_BE_UPDATED:
+	case COMP_COMPARISON_STAMP_IDENTICAL:
+	case COMP_COMPARISON_STAMP_LOWER:
+	case INVALID_COMP_COMPARISON_STAMP:
+	case COMP_CONFLICT:
+	case COMP_PREREQUISITES:
+	case COMP_NOT_SUPPORTED:
+	case COMP_SECURITY_RESTRICTIONS:
+	case INCOMPLETE_COMP_IMAGE_SET:
+	case COMP_VER_STR_IDENTICAL:
+	case COMP_VER_STR_LOWER:
+		return true;
+
+	default:
+		return false;
+	}
+}
+
+/*PassComponentTable Encode Request API */
+int encode_pass_component_table_req(const uint8_t instance_id,
+				    struct pldm_msg *msg,
+				    const size_t payload_length,
+				    const struct pass_component_table_req *data,
+				    struct variable_field *comp_ver_str)
+{
+	if (msg == NULL || data == NULL || comp_ver_str == NULL ||
+	    msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (payload_length < sizeof(struct pass_component_table_req)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pldm_header_info header = {0};
+	header.instance = instance_id;
+	header.msg_type = PLDM_REQUEST;
+	header.pldm_type = PLDM_FWU;
+	header.command = PLDM_PASS_COMPONENT_TABLE;
+
+	int rc = pack_pldm_header(&header, &(msg->hdr));
+	if (PLDM_SUCCESS != rc) {
+		return rc;
+	}
+
+	if (!check_transfer_flag_valid(data->transfer_flag)) {
+		return PLDM_INVALID_TRANSFER_OPERATION_FLAG;
+	}
+
+	if (!check_comp_classification_valid(
+		htole16(data->comp_classification))) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (!check_comp_ver_str_type_valid(data->comp_ver_str_type)) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	memcpy(msg->payload, data, sizeof(struct pass_component_table_req));
+
+	if (payload_length !=
+	    sizeof(struct pass_component_table_req) + comp_ver_str->length) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	if (comp_ver_str->ptr == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	memcpy(msg->payload + sizeof(struct pass_component_table_req),
+	       comp_ver_str->ptr, comp_ver_str->length);
+
+	return PLDM_SUCCESS;
+}
+
+/*PassComponentTable decode Response API */
+int decode_pass_component_table_resp(const struct pldm_msg *msg,
+				     const size_t payload_length,
+				     uint8_t *completion_code,
+				     uint8_t *comp_resp,
+				     uint8_t *comp_resp_code)
+{
+	if (msg == NULL || completion_code == NULL || comp_resp == NULL ||
+	    comp_resp_code == NULL || msg->payload == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*completion_code = msg->payload[0];
+
+	if (*completion_code != PLDM_SUCCESS) {
+		return *completion_code;
+	}
+
+	if (payload_length != sizeof(struct pass_component_table_resp)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	struct pass_component_table_resp *response =
+	    (struct pass_component_table_resp *)msg->payload;
+
+	if (response->comp_resp != COMP_CAN_BE_UPDATEABLE &&
+	    response->comp_resp != COMP_MAY_BE_UPDATEABLE) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*comp_resp = response->comp_resp;
+
+	if (!check_resp_code_valid(response->comp_resp_code)) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	*comp_resp_code = response->comp_resp_code;
 
 	return PLDM_SUCCESS;
 }

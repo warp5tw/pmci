@@ -212,6 +212,7 @@ static std::optional<PcieConfiguration>
     uint64_t bdf;
     uint64_t reqToRespTimeMs;
     uint64_t reqRetryCount;
+    uint64_t getRoutingInterval;
 
     if (!getField(map, "PhysicalMediumID", physicalMediumID))
     {
@@ -240,6 +241,15 @@ static std::optional<PcieConfiguration>
         return std::nullopt;
     }
 
+    const auto mode = stringToBindingModeMap.at(role);
+    if (mode != mctp_server::BindingModeTypes::BusOwner &&
+        !getField(map, "GetRoutingInterval", getRoutingInterval))
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Role is not BusOwner but Get Routing update interval is missing");
+        return std::nullopt;
+    }
+
     PcieConfiguration config;
     config.mediumId = stringToMediumID.at(physicalMediumID);
     config.mode = stringToBindingModeMap.at(role);
@@ -247,6 +257,10 @@ static std::optional<PcieConfiguration>
     config.bdf = static_cast<uint16_t>(bdf);
     config.reqToRespTime = static_cast<unsigned int>(reqToRespTimeMs);
     config.reqRetryCount = static_cast<uint8_t>(reqRetryCount);
+    if (mode != mctp_server::BindingModeTypes::BusOwner)
+    {
+        config.getRoutingInterval = static_cast<uint8_t>(getRoutingInterval);
+    }
 
     return config;
 }
@@ -407,16 +421,15 @@ int main(int argc, char* argv[])
     }
 
     std::string mctpBaseObj = "/xyz/openbmc_project/mctp";
-    using BindingVariant = std::variant<std::unique_ptr<SMBusBinding>,
-                                        std::unique_ptr<PCIeBinding>>;
-    auto ptr = std::visit(
+
+    auto bindingPtr = std::visit(
         overload{[&mctpdConfiguration, &objectServer, &mctpBaseObj,
-                  &ioc](SMBusConfiguration&) -> BindingVariant {
+                  &ioc](SMBusConfiguration&) -> std::unique_ptr<MctpBinding> {
                      return std::make_unique<SMBusBinding>(
                          objectServer, mctpBaseObj, *mctpdConfiguration, ioc);
                  },
                  [&mctpdConfiguration, &objectServer, &mctpBaseObj,
-                  &ioc](PcieConfiguration&) -> BindingVariant {
+                  &ioc](PcieConfiguration&) -> std::unique_ptr<MctpBinding> {
                      return std::make_unique<PCIeBinding>(
                          objectServer, mctpBaseObj, *mctpdConfiguration, ioc);
                  }},
@@ -424,9 +437,7 @@ int main(int argc, char* argv[])
 
     try
     {
-        std::visit([&mctpdConfiguration](
-                       auto& b) { b->initializeBinding(*mctpdConfiguration); },
-                   ptr);
+        bindingPtr->initializeBinding(*mctpdConfiguration);
     }
     catch (const std::exception& e)
     {

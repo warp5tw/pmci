@@ -165,7 +165,7 @@ static bool isMuxBus(const std::string& bus)
  * dstEid can't be removed because this is a callback passed to libmctp and we
  * have to match its expected prototype.
  */
-int getSMBusOutputAddress([[maybe_unused]] uint8_t dstEid, uint8_t* outAddr)
+int getSMBusOutputAddress(uint8_t /*dstEid*/, uint8_t* outAddr)
 {
     // Mapping should rely on routing table and message binding private
     // Handling this here until libmctp implements routing infrastructure
@@ -285,7 +285,8 @@ void SMBusBinding::SMBusInit()
         throwRunTimeError("Error in SMBus binding registration");
     }
 
-    mctp_set_rx_all(mctp, rxMessage, nullptr);
+    mctp_set_rx_all(mctp, &MctpBinding::rxMessage,
+                    static_cast<MctpBinding*>(this));
 
     std::string rootPort;
     if (!getBusNumFromPath(bus, rootPort))
@@ -396,7 +397,7 @@ void SMBusBinding::readResponse()
         });
 }
 
-void SMBusBinding::scanAllPorts(void)
+void SMBusBinding::scanAllPorts()
 {
     phosphor::logging::log<phosphor::logging::level::INFO>(
         "Scanning root port");
@@ -472,11 +473,10 @@ void SMBusBinding::initEndpointDiscovery(ConfigurationVariant& conf)
                                                 ptr + sizeof(smbusBindingPvt));
 
             auto rc = registerEndpoint(yield, bindingPvtVect, isBusOwner);
-
-            if (rc.first)
+            if (rc)
             {
                 smbusDeviceTable.push_back(
-                    std::make_pair(rc.second, smbusBindingPvt));
+                    std::make_pair(rc.value(), smbusBindingPvt));
             }
             else if( smbusBindingPvt.slave_addr == 0xE2)//This is a PLDM I2C Slave device on NCT6681
             {
@@ -485,4 +485,23 @@ void SMBusBinding::initEndpointDiscovery(ConfigurationVariant& conf)
             }
         }
     });
+}
+
+// TODO: This method is a placeholder and has not been tested
+bool SMBusBinding::handleGetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
+                                       std::vector<uint8_t>& request,
+                                       std::vector<uint8_t>& response)
+{
+    if (!MctpBinding::handleGetEndpointId(destEid, bindingPrivate, request,
+                                          response))
+    {
+        return false;
+    }
+
+    auto const ptr = reinterpret_cast<uint8_t*>(bindingPrivate);
+    std::vector<uint8_t> bindingPvtVect(ptr,
+                                        ptr + sizeof(mctp_smbus_extra_params));
+    getBindingPrivateData(destEid, bindingPvtVect);
+    std::copy(bindingPvtVect.begin(), bindingPvtVect.end(), ptr);
+    return true;
 }

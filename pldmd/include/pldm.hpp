@@ -13,6 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#pragma once
 
 #include <boost/asio.hpp>
 #include <boost/asio/spawn.hpp>
@@ -30,6 +31,22 @@ std::shared_ptr<sdbusplus::asio::object_server> getObjServer();
 
 namespace pldm
 {
+constexpr size_t pldmMsgHdrSize = sizeof(pldm_msg_hdr);
+
+/** @brief pldm_empty_request
+ *
+ * structure representing PLDM empty request.
+ */
+struct PLDMEmptyRequest
+{
+    struct pldm_msg_hdr header;
+} __attribute__((packed));
+
+using PLDMCommandTable = std::vector<std::map<
+    ver32_t, /*Supported PLDM Version*/
+    std::array<bitfield8_t, PLDM_MAX_CMDS_PER_TYPE / 8> /*Supported PLDM
+                                                           Commands*/
+    >>;
 
 /** @brief Creates new Instance ID for PLDM messages
  *
@@ -83,6 +100,30 @@ void addToMapper(const pldm_tid_t tid, const mctpw_eid_t eid);
 std::optional<pldm_tid_t> getTidFromMapper(const mctpw_eid_t eid);
 std::optional<mctpw_eid_t> getEidFromMapper(const pldm_tid_t tid);
 
+/** @brief Validate PLDM message encode
+ *
+ * @param tid[in] - TID of the PLDM device
+ * @param rc[in] - Return code of the decode operation
+ * @param commandString[in] - Command name
+ *
+ * @return Validation status
+ */
+bool validatePLDMReqEncode(const pldm_tid_t tid, const int rc,
+                           const std::string& commandString);
+
+/** @brief Validate PLDM message decode
+ *
+ * @param tid[in] - TID of the PLDM device
+ * @param rc[in] - Return code of the decode operation
+ * @param completionCode[in] - Completion code in the response
+ * @param commandString[in] - Command name
+ *
+ * @return Validation status
+ */
+bool validatePLDMRespDecode(const pldm_tid_t tid, const int rc,
+                            const uint8_t completionCode,
+                            const std::string& commandString);
+
 /** @brief Send PLDM message
  *
  * Sends PLDM messages to a PLDM device.
@@ -112,10 +153,35 @@ bool baseInit(boost::asio::yield_context yield, const pldm_tid_t tid);
 namespace platform
 {
 
-bool platformInit(boost::asio::yield_context yield, const pldm_tid_t tid);
+/** @brief Initilize Platform Monitoring and Control
+ *
+ * Initilizes supported functionalities defined in spec DSP0248.
+ *
+ * @param yield - Context object the represents the currently executing
+ * coroutine
+ * @param tid - TID of the PLDM device
+ * @param commandTable - PLDM command table which defines supported Platform M&C
+ * versions and commands
+ *
+ * @return Status of the operation
+ */
+bool platformInit(boost::asio::yield_context yield, const pldm_tid_t tid,
+                  const PLDMCommandTable& commandTable);
+
+/** @brief Destroy Platform Monitoring and Control
+ *
+ * Destroy Platform Monitoring and Control resources allocated for specific TID.
+ *
+ * @param tid - TID of the PLDM device
+ *
+ * @return Status of the operation
+ */
+
+bool platformDestroy(const pldm_tid_t tid);
 
 } // namespace platform
 
+// TODO: add destroy APIs for Base, FRU and FWU
 namespace fru
 {
 

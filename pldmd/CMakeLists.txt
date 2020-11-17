@@ -40,6 +40,7 @@ set (CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 # Add header and sources here
 set (SRC_FILES ${PROJECT_SOURCE_DIR}/src/pldmd.cpp
                ${PROJECT_SOURCE_DIR}/src/platform.cpp
+               ${PROJECT_SOURCE_DIR}/src/pdr_manager.cpp
                ${PROJECT_SOURCE_DIR}/src/sdbus-asio.cpp
                ${PROJECT_SOURCE_DIR}/src/firmware_update.cpp
                ${PROJECT_SOURCE_DIR}/src/fru.cpp
@@ -56,8 +57,8 @@ set (SERVICE_FILES
 
 add_executable(${PROJECT_NAME} ${SRC_FILES} ${HEADER_FILES})
 
-target_link_libraries (${PROJECT_NAME} sdbusplus -lsystemd -lboost_system
-                        -lpthread -lstdc++fs -lphosphor_dbus -lmctpw -lpldm_intel
+target_link_libraries (${PROJECT_NAME} sdbusplus -lsystemd -lpldm_intel
+                        -lpthread -lstdc++fs -lphosphor_dbus -lmctpw
                         -lboost_coroutine)
 
 install (TARGETS ${PROJECT_NAME} DESTINATION bin)

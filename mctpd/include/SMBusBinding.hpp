@@ -17,6 +17,9 @@ class SMBusBinding : public MctpBinding
     virtual void initializeBinding(ConfigurationVariant& conf) override;
     virtual bool getBindingPrivateData(uint8_t dstEid,
                                        std::vector<uint8_t>& pvtData) override;
+    virtual bool handleGetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
+                                     std::vector<uint8_t>& request,
+                                     std::vector<uint8_t>& response) override;
 
   private:
     void SMBusInit();

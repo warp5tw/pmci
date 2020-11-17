@@ -1,3 +1,4 @@
+#include "PCIeBinding.hpp"
 #include "SMBusBinding.hpp"
 
 using ::testing::_;
@@ -33,11 +34,11 @@ class MctpdBaseTest : public ::testing::Test
         smbusConfig.defaultEid = defaultEid;
         smbusConfig.eidPool = eidPool;
         smbusConfig.bus = busName;
-        testConfiuration.emplace<SMBusConfiguration>(smbusConfig);
+        testConfiguration.emplace<SMBusConfiguration>(smbusConfig);
     }
     std::string mctpBaseObj = "/xyz/openbmc_project/mctp";
     std::shared_ptr<mctpd_mock::object_server_mock> objectServerMock;
-    ConfigurationVariant testConfiuration;
+    ConfigurationVariant testConfiguration;
 };
 
 /*
@@ -131,9 +132,10 @@ TEST_F(MctpdBaseTest, BaseIfPropertyTest)
 
     /*Invoke constructor */
     boost::asio::io_context ioc;
-    SMBusBinding smbusBinding =
-        SMBusBinding(objectServerMock, mctpBaseObj, testConfiuration, ioc);
-    smbusBinding.initializeBinding(testConfiuration);
+
+    std::unique_ptr<MctpBinding> bindingPtr = std::make_unique<SMBusBinding>(
+        objectServerMock, mctpBaseObj, testConfiguration, ioc);
+    bindingPtr->initializeBinding(this->testConfiguration);
 }
 
 int main(int argc, char** argv)

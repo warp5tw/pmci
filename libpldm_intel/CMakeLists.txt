@@ -49,7 +49,6 @@ set (HEADER_FILES ${PROJECT_SOURCE_DIR}/base.h
         ${PROJECT_SOURCE_DIR}/pldm_types.h
         ${PROJECT_SOURCE_DIR}/state_set.h
         ${PROJECT_SOURCE_DIR}/utils.h
-        ${PROJECT_SOURCE_DIR}/utils.h
 )
 
 if (BUILD_STANDALONE)
@@ -74,8 +73,8 @@ install (FILES ${HEADER_FILES} DESTINATION include)
 include (CTest)
 
 set (TEST_BASE tests/libpldm_base_test.cpp base.c)
-set (TEST_FRU tests/libpldm_fru_test.cpp fru.c base.c)
-set (TEST_FW_UPDATE tests/libpldm_fw_update_test.cpp firmware_update.c base.c)
+set (TEST_FRU tests/libpldm_fru_test.cpp fru.c base.c utils.c)
+set (TEST_FW_UPDATE tests/libpldm_fw_update_test.cpp firmware_update.c base.c utils.c)
 set (TEST_PDR tests/libpldm_pdr_test.cpp pdr.c)
 set (TEST_PLATFORM tests/libpldm_platform_test.cpp platform.c base.c)
 set (TEST_UTILS tests/libpldm_utils_test.cpp utils.c)
