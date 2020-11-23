@@ -449,6 +449,9 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
     mctp_ctrl_msg_hdr* reqHeader =
         reinterpret_cast<mctp_ctrl_msg_hdr*>(request.data());
 
+    if (reqHeader == nullptr)
+         return;
+
     switch (reqHeader->command_code)
     {
         case MCTP_CTRL_CMD_PREPARE_ENDPOINT_DISCOVERY: {
@@ -592,15 +595,19 @@ bool MctpBinding::handleGetMsgTypeSupport(mctp_eid_t, void*,
                                           std::vector<uint8_t>& response)
 {
     std::vector<uint8_t> supportedMsgTypes = getBindingMsgTypes();
+    response.resize(sizeof(mctp_ctrl_resp_get_msg_type_support) +
+                    supportedMsgTypes.size() * sizeof(msg_type_entry));
+
     mctp_ctrl_resp_get_msg_type_support* resp =
         reinterpret_cast<mctp_ctrl_resp_get_msg_type_support*>(response.data());
     resp->completion_code = MCTP_CTRL_CC_SUCCESS;
     resp->msg_type_count = static_cast<uint8_t>(supportedMsgTypes.size());
-    response.resize(sizeof(mctp_ctrl_resp_get_msg_type_support) +
-                    supportedMsgTypes.size() * sizeof(msg_type_entry));
+
+
     std::copy_n(supportedMsgTypes.data(),
                 supportedMsgTypes.size() * sizeof(msg_type_entry),
                 response.data() + sizeof(mctp_ctrl_resp_get_msg_type_support));
+
     return true;
 }
 
