@@ -1964,6 +1964,417 @@ TEST(GetPDRRepositoryInfo, testBadDecodeResponse)
     EXPECT_EQ(rc, PLDM_ERROR_INVALID_LENGTH);
 }
 
+TEST(GetTerminusUID, EncodeRequestGood)
+{
+    constexpr uint8_t instanceId = 0x12;
+    std::array<uint8_t, hdrSize> reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+
+    int rc = encode_get_terminus_uid_req(instanceId, msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_GET_TERMINUS_UID);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, 1);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceId);
+}
+
+TEST(GetTerminusUID, EncodeRequestBad)
+{
+    constexpr uint8_t instanceId = 0x12;
+    int rc = encode_get_terminus_uid_req(instanceId, nullptr);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(GetTerminusUID, DecodeResponseGood)
+{
+    std::array<uint8_t, hdrSize + sizeof(pldm_get_terminus_uid_resp)>
+        respData{};
+    auto msg = reinterpret_cast<pldm_msg*>(respData.data());
+    constexpr uint8_t completionCode = PLDM_SUCCESS;
+    std::array<uint8_t, 16> uuidIn{1, 2,  3,  4,  5,  6,  7,  8,
+                                   9, 10, 11, 12, 13, 14, 15, 16};
+    std::array<uint8_t, 16> uuidOut{};
+
+    pldm_get_terminus_uid_resp* response =
+        reinterpret_cast<pldm_get_terminus_uid_resp*>(msg->payload);
+    response->completion_code = completionCode;
+    memcpy(response->uuid, uuidIn.data(), sizeof(response->uuid));
+
+    uint8_t completionCodeOut;
+    int rc =
+        decode_get_terminus_uid_resp(msg, sizeof(pldm_get_terminus_uid_resp),
+                                     &completionCodeOut, uuidOut.data());
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(completionCodeOut, completionCode);
+    EXPECT_EQ(uuidIn, uuidOut);
+}
+
+TEST(GetTerminusUID, DecodeResponseBad)
+{
+    uint8_t completionCodeOut = PLDM_SUCCESS;
+    std::array<uint8_t, 16> uuidOut;
+    std::array<uint8_t, hdrSize + sizeof(pldm_get_terminus_uid_resp)>
+        respData{};
+    auto msg = reinterpret_cast<pldm_msg*>(respData.data());
+    int rc = decode_get_terminus_uid_resp(nullptr,
+                                          sizeof(pldm_get_terminus_uid_resp),
+                                          &completionCodeOut, uuidOut.data());
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+    rc = decode_get_terminus_uid_resp(
+        nullptr, sizeof(pldm_get_terminus_uid_resp), nullptr, nullptr);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+    rc = decode_get_terminus_uid_resp(
+        nullptr, sizeof(pldm_get_terminus_uid_resp), nullptr, uuidOut.data());
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+    rc = decode_get_terminus_uid_resp(nullptr,
+                                      sizeof(pldm_get_terminus_uid_resp),
+                                      &completionCodeOut, nullptr);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+    rc = decode_get_terminus_uid_resp(msg, sizeof(pldm_get_terminus_uid_resp),
+                                      nullptr, nullptr);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+    rc = decode_get_terminus_uid_resp(msg,
+                                      sizeof(pldm_get_terminus_uid_resp) - 1,
+                                      &completionCodeOut, uuidOut.data());
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_LENGTH);
+}
+
+TEST(SetNumericSensorEnable, testGoodEncodeRequest)
+{
+    std::array<uint8_t, hdrSize + sizeof(pldm_set_numeric_sensor_enable_req)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t sensorID = 0x1123;
+    constexpr uint8_t sensorOperationalState = PLDM_SENSOR_UNAVAILABLE;
+    constexpr uint8_t sensorEventMessageEnable = PLDM_STATE_EVENTS_ONLY_ENABLED;
+
+    auto rc = encode_set_numeric_sensor_enable_req(
+        instanceID, sensorID, sensorOperationalState, sensorEventMessageEnable,
+        msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_SET_NUMERIC_SENSOR_ENABLE);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, 1);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceID);
+
+    struct pldm_set_numeric_sensor_enable_req* sensorEnableReq =
+        reinterpret_cast<struct pldm_set_numeric_sensor_enable_req*>(
+            msg->payload);
+
+    EXPECT_EQ(sensorEnableReq->sensor_id, sensorID);
+    EXPECT_EQ(sensorEnableReq->sensor_operational_state,
+              sensorOperationalState);
+    EXPECT_EQ(sensorEnableReq->sensor_event_message_enable,
+              sensorEventMessageEnable);
+}
+
+TEST(SetNumericSensorEnable, testBadEncodeRequest)
+{
+    std::array<uint8_t, hdrSize + sizeof(pldm_set_numeric_sensor_enable_req)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t sensorID = 0x1123;
+    uint8_t sensorOperationalState = PLDM_SENSOR_UNAVAILABLE;
+    uint8_t sensorEventMessageEnable = PLDM_STATE_EVENTS_ONLY_ENABLED;
+
+    int rc = encode_set_numeric_sensor_enable_req(
+        instanceID, sensorID, sensorOperationalState, sensorEventMessageEnable,
+        NULL);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    sensorOperationalState = PLDM_SENSOR_UNAVAILABLE + 1;
+    rc = encode_set_numeric_sensor_enable_req(instanceID, sensorID,
+                                              sensorOperationalState,
+                                              sensorEventMessageEnable, msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    sensorEventMessageEnable = PLDM_STATE_EVENTS_ONLY_ENABLED + 1;
+    rc = encode_set_numeric_sensor_enable_req(instanceID, sensorID,
+                                              sensorOperationalState,
+                                              sensorEventMessageEnable, msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(SetStateSensorEnables, testGoodEncodeRequest)
+{
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t sensorID = 0x1123;
+    constexpr uint8_t compositeSensorCount = 2;
+    constexpr uint8_t sensorOperationalState = PLDM_SENSOR_UNAVAILABLE;
+    constexpr uint8_t sensorEventMessageEnable = PLDM_ENABLE_EVENTS;
+    state_sensor_op_field opField1 = {sensorOperationalState,
+                                      sensorEventMessageEnable};
+    std::array<state_sensor_op_field, 2> opFields = {opField1, opField1};
+    std::array<uint8_t,
+               hdrSize + sizeof(pldm_set_state_sensor_enable_req) -
+                   sizeof(state_sensor_op_field) +
+                   (sizeof(state_sensor_op_field) * compositeSensorCount)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+
+    auto rc = encode_set_state_sensor_enable_req(
+        instanceID, sensorID, compositeSensorCount, opFields.data(), msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_SET_STATE_SENSOR_ENABLE);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, PLDM_REQUEST);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceID);
+
+    struct pldm_set_state_sensor_enable_req* sensorEnableReq =
+        reinterpret_cast<struct pldm_set_state_sensor_enable_req*>(
+            msg->payload);
+    state_sensor_op_field* opFieldsOut = sensorEnableReq->op_field;
+
+    EXPECT_EQ(sensorEnableReq->sensor_id, sensorID);
+    EXPECT_EQ(sensorEnableReq->composite_sensor_count, compositeSensorCount);
+    EXPECT_EQ(opFieldsOut[0].sensor_operational_state, sensorOperationalState);
+    EXPECT_EQ(opFieldsOut[0].event_message_enable, sensorEventMessageEnable);
+    EXPECT_EQ(opFieldsOut[1].sensor_operational_state, sensorOperationalState);
+    EXPECT_EQ(opFieldsOut[1].event_message_enable, sensorEventMessageEnable);
+}
+
+TEST(SetStateSensorEnables, testBadEncodeRequest)
+{
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t sensorID = 0x1123;
+    constexpr uint8_t compositeSensorCount = 2;
+    uint8_t sensorOperationalState = PLDM_SENSOR_UNAVAILABLE;
+    uint8_t sensorEventMessageEnable = PLDM_ENABLE_EVENTS;
+    state_sensor_op_field opField1 = {sensorOperationalState,
+                                      sensorEventMessageEnable};
+    state_sensor_op_field opField2 = {sensorOperationalState,
+                                      sensorEventMessageEnable};
+    std::array<state_sensor_op_field, 2> opFields = {opField1, opField2};
+    std::array<uint8_t,
+               hdrSize + sizeof(pldm_set_state_sensor_enable_req) -
+                   sizeof(state_sensor_op_field) +
+                   (sizeof(state_sensor_op_field) * compositeSensorCount)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+
+    int rc = encode_set_state_sensor_enable_req(
+        instanceID, sensorID, compositeSensorCount, opFields.data(), NULL);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    rc = encode_set_state_sensor_enable_req(
+        instanceID, sensorID, PLDM_COMPOSITE_EFFECTER_COUNT_MAX + 1,
+        opFields.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    constexpr uint8_t compositeSensorCountInvalid = 0;
+    rc = encode_set_state_sensor_enable_req(instanceID, sensorID,
+                                            compositeSensorCountInvalid,
+                                            opFields.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    uint8_t sensorOperationalStateInvalid = PLDM_SENSOR_UNAVAILABLE + 1;
+    state_sensor_op_field opFieldInvalid1 = {sensorOperationalStateInvalid,
+                                             sensorEventMessageEnable};
+    std::array<state_sensor_op_field, 2> opFieldsInvalid = {opField1,
+                                                            opFieldInvalid1};
+    rc = encode_set_state_sensor_enable_req(instanceID, sensorID,
+                                            compositeSensorCount,
+                                            opFieldsInvalid.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    uint8_t sensorEventMessageEnableInvalid = PLDM_ENABLE_EVENTS + 1;
+    state_sensor_op_field opFieldInvalid2 = {sensorOperationalState,
+                                             sensorEventMessageEnableInvalid};
+    std::array<state_sensor_op_field, 2> opFieldsInvalid2 = {opField1,
+                                                             opFieldInvalid2};
+    rc = encode_set_state_sensor_enable_req(instanceID, sensorID,
+                                            compositeSensorCount,
+                                            opFieldsInvalid2.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(SetNumericEffecterEnable, testGoodEncodeRequest)
+{
+    std::array<uint8_t, hdrSize + sizeof(pldm_set_numeric_effecter_enable_req)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t effecterID = 0x1123;
+    constexpr uint8_t effecterOperationalState = PLDM_SENSOR_UNAVAILABLE;
+
+    auto rc = encode_set_numeric_effecter_enable_req(
+        instanceID, effecterID, effecterOperationalState, msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_SET_NUMERIC_EFFECTER_ENABLE);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, 1);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceID);
+
+    struct pldm_set_numeric_effecter_enable_req* effecterEnableReq =
+        reinterpret_cast<struct pldm_set_numeric_effecter_enable_req*>(
+            msg->payload);
+
+    EXPECT_EQ(effecterEnableReq->effecter_id, effecterID);
+    EXPECT_EQ(effecterEnableReq->effecter_operational_state,
+              effecterOperationalState);
+}
+
+TEST(SetNumericEffecterEnable, testBadEncodeRequest)
+{
+    std::array<uint8_t, hdrSize + sizeof(pldm_set_numeric_effecter_enable_req)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t effecterID = 0x1123;
+    uint8_t effecterOperationalState = PLDM_SENSOR_UNAVAILABLE;
+
+    int rc = encode_set_numeric_effecter_enable_req(
+        instanceID, effecterID, effecterOperationalState, NULL);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    effecterOperationalState = PLDM_SENSOR_UNAVAILABLE + 1;
+    rc = encode_set_numeric_effecter_enable_req(instanceID, effecterID,
+                                                effecterOperationalState, msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(SetStateEffecterEnables, testGoodEncodeRequest)
+{
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t effecterID = 0x1123;
+    constexpr uint8_t compositeEffecterCount = 2;
+    constexpr uint8_t effecterOperationalState = EFFECTER_OPER_STATE_INTEST;
+    constexpr uint8_t effecterEventMessageEnable = PLDM_ENABLE_EVENTS;
+    state_effecter_op_field opField1 = {effecterOperationalState,
+                                        effecterEventMessageEnable};
+    state_effecter_op_field opField2 = {effecterOperationalState,
+                                        effecterEventMessageEnable};
+    std::array<state_effecter_op_field, 2> opFields = {opField1, opField2};
+    std::array<uint8_t,
+               hdrSize + sizeof(pldm_set_state_effecter_enable_req) -
+                   sizeof(state_effecter_op_field) +
+                   (sizeof(state_effecter_op_field) * compositeEffecterCount)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+
+    auto rc = encode_set_state_effecter_enable_req(
+        instanceID, effecterID, compositeEffecterCount, opFields.data(), msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_SET_STATE_EFFECTER_ENABLE);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, 1);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceID);
+
+    struct pldm_set_state_effecter_enable_req* effecterEnableReq =
+        reinterpret_cast<struct pldm_set_state_effecter_enable_req*>(
+            msg->payload);
+    state_effecter_op_field* opFieldsOut = effecterEnableReq->op_field;
+
+    EXPECT_EQ(effecterEnableReq->effecter_id, effecterID);
+    EXPECT_EQ(effecterEnableReq->composite_effecter_count,
+              compositeEffecterCount);
+    EXPECT_EQ(opFieldsOut[0].effecter_operational_state,
+              effecterOperationalState);
+    EXPECT_EQ(opFieldsOut[0].event_message_enable, effecterEventMessageEnable);
+    EXPECT_EQ(opFieldsOut[1].effecter_operational_state,
+              effecterOperationalState);
+    EXPECT_EQ(opFieldsOut[1].event_message_enable, effecterEventMessageEnable);
+}
+
+TEST(SetStateEffecterEnables, testBadEncodeRequest)
+{
+    constexpr uint8_t instanceID = 0x0A;
+    constexpr uint16_t effecterID = 0x1123;
+    constexpr uint8_t compositeEffecterCount = 2;
+    uint8_t effecterOperationalState = EFFECTER_OPER_STATE_INTEST;
+    uint8_t effecterEventMessageEnable = PLDM_ENABLE_EVENTS;
+    state_effecter_op_field opField1 = {effecterOperationalState,
+                                        effecterEventMessageEnable};
+    state_effecter_op_field opField2 = {effecterOperationalState,
+                                        effecterEventMessageEnable};
+    std::array<state_effecter_op_field, 2> opFields = {opField1, opField2};
+    std::array<uint8_t,
+               hdrSize + sizeof(pldm_set_state_effecter_enable_req) -
+                   sizeof(state_effecter_op_field) +
+                   (sizeof(state_effecter_op_field) * compositeEffecterCount)>
+        reqData{};
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(reqData.data());
+
+    int rc = encode_set_state_effecter_enable_req(
+        instanceID, effecterID, compositeEffecterCount, opFields.data(), NULL);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    constexpr uint8_t compositeEffecterCountInvalid = 0;
+    rc = encode_set_state_effecter_enable_req(instanceID, effecterID,
+                                              compositeEffecterCountInvalid,
+                                              opFields.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    uint8_t effecterOperationalStateInvalid = EFFECTER_OPER_STATE_INTEST + 1;
+    state_effecter_op_field opFieldInvalid1 = {effecterOperationalStateInvalid,
+                                               effecterEventMessageEnable};
+    std::array<state_effecter_op_field, 2> opFieldsInvalid = {opField1,
+                                                              opFieldInvalid1};
+    rc = encode_set_state_effecter_enable_req(instanceID, effecterID,
+                                              compositeEffecterCount,
+                                              opFieldsInvalid.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    uint8_t effecterEventMessageEnableInvalid = PLDM_ENABLE_EVENTS + 1;
+    state_effecter_op_field opFieldInvalid2 = {
+        effecterOperationalState, effecterEventMessageEnableInvalid};
+    std::array<state_effecter_op_field, 2> opFieldsInvalid2 = {opField1,
+                                                               opFieldInvalid2};
+    rc = encode_set_state_effecter_enable_req(instanceID, effecterID,
+                                              compositeEffecterCount,
+                                              opFieldsInvalid2.data(), msg);
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(GetStateEffecterStates, testGoodEncodeRequest)
+{
+    std::array<uint8_t,
+               hdrSize + sizeof(struct pldm_get_state_effecter_states_req)>
+        requestMsg{};
+
+    constexpr uint16_t effecterId = 0xAB;
+    constexpr uint8_t instanceID = 0x0A;
+
+    pldm_msg* msg = reinterpret_cast<pldm_msg*>(requestMsg.data());
+    auto rc = encode_get_state_effecter_states_req(instanceID, effecterId, msg);
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(msg->hdr.command, PLDM_GET_STATE_EFFECTER_STATES);
+    EXPECT_EQ(msg->hdr.type, PLDM_PLATFORM);
+    EXPECT_EQ(msg->hdr.request, 1);
+    EXPECT_EQ(msg->hdr.datagram, 0);
+    EXPECT_EQ(msg->hdr.instance_id, instanceID);
+
+    struct pldm_get_state_effecter_states_req* req =
+        reinterpret_cast<struct pldm_get_state_effecter_states_req*>(
+            msg->payload);
+    EXPECT_EQ(effecterId, le16toh(req->effecter_id));
+}
+
+TEST(GetStateEffecterStates, testBadEncodeRequest)
+{
+    constexpr uint16_t effecterId = 0xAB;
+    constexpr uint8_t instanceID = 0x0A;
+
+    auto rc =
+        encode_get_state_effecter_states_req(instanceID, effecterId, nullptr);
+
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
 int main(int argc, char** argv)
 {
     ::testing::InitGoogleTest(&argc, argv);

@@ -1649,36 +1649,6 @@ int decode_get_sensor_hysteresis_resp(const struct pldm_msg *msg, size_t payload
 	return PLDM_SUCCESS;
 }
 
-int encode_set_numeric_sensor_enable_req(uint8_t instance_id, uint16_t sensor_id,
-				  uint8_t sensor_operational_state, uint8_t sensor_event_message_enable,
-				  struct pldm_msg *msg)
-{
-	struct pldm_header_info header = {0};
-	int rc = PLDM_SUCCESS;
-
-	header.msg_type = PLDM_REQUEST;
-	header.instance = instance_id;
-	header.pldm_type = PLDM_PLATFORM;
-	header.command = PLDM_SET_NUMERIC_SENSOR_ENABLE;
-
-	if (msg == NULL) {
-		return PLDM_ERROR_INVALID_DATA;
-	}
-
-	if ((rc = pack_pldm_header(&header, &(msg->hdr))) > PLDM_SUCCESS) {
-		return rc;
-	}
-
-	struct pldm_set_numeric_sensor_enable_req *request =
-	    (struct pldm_set_numeric_sensor_enable_req *)msg->payload;
-
-	request->sensor_id = htole16(sensor_id);
-	request->sensor_operational_state = sensor_operational_state;
-	request->sensor_event_message_enable = sensor_event_message_enable;
-
-	return PLDM_SUCCESS;
-}
-
 int decode_set_numeric_sensor_enable_resp(
     const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code)
 {
@@ -1931,6 +1901,213 @@ int decode_get_pdr_repository_info_resp(
 	LE32TOH(resp->pdr_repo_info.largest_record_size);
 
 	// TODO: Validate is update_time and oem_update_time legal
+
+	return PLDM_SUCCESS;
+}
+
+int decode_get_terminus_uid_resp(const struct pldm_msg *msg,
+				 const size_t payload_length,
+				 uint8_t *completion_code, uint8_t *uuid)
+{
+	if (msg == NULL || completion_code == NULL || uuid == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	struct pldm_get_terminus_uid_resp *response =
+	    (struct pldm_get_terminus_uid_resp *)msg->payload;
+
+	*completion_code = response->completion_code;
+	if (*completion_code != PLDM_SUCCESS) {
+		return PLDM_SUCCESS;
+	}
+
+	if (payload_length != sizeof(struct pldm_get_terminus_uid_resp)) {
+		return PLDM_ERROR_INVALID_LENGTH;
+	}
+
+	memcpy(uuid, response->uuid, sizeof(response->uuid));
+
+	return PLDM_SUCCESS;
+}
+
+int encode_set_numeric_sensor_enable_req(
+    const uint8_t instance_id, const uint16_t sensor_id,
+    const uint8_t sensor_operational_state,
+    const uint8_t sensor_event_message_enable, struct pldm_msg *msg)
+{
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (sensor_event_message_enable > PLDM_STATE_EVENTS_ONLY_ENABLED ||
+	    sensor_operational_state > PLDM_SENSOR_UNAVAILABLE) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	int rc = PLDM_SUCCESS;
+	if ((rc = encode_pldm_header(instance_id, PLDM_PLATFORM,
+				     PLDM_SET_NUMERIC_SENSOR_ENABLE,
+				     PLDM_REQUEST, msg)) != PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_numeric_sensor_enable_req *request =
+	    (struct pldm_set_numeric_sensor_enable_req *)msg->payload;
+	request->sensor_id = htole16(sensor_id);
+	request->sensor_operational_state = sensor_operational_state;
+	request->sensor_event_message_enable = sensor_event_message_enable;
+	return PLDM_SUCCESS;
+}
+
+static bool is_state_sensor_op_field_valid(uint8_t sensor_operational_state,
+					   uint8_t event_message_enable)
+{
+	if ((event_message_enable > PLDM_ENABLE_EVENTS &&
+	     event_message_enable != PLDM_NO_CHANGE_EVENTS) ||
+	    sensor_operational_state > PLDM_SENSOR_UNAVAILABLE) {
+		return false;
+	}
+	return true;
+}
+
+int encode_set_state_sensor_enable_req(const uint8_t instance_id,
+				       const uint16_t sensor_id,
+				       const uint8_t composite_sensor_count,
+				       state_sensor_op_field *op_fields,
+				       struct pldm_msg *msg)
+{
+	uint8_t itr = 0;
+
+	if (msg == NULL || op_fields == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (composite_sensor_count < PLDM_COMPOSITE_EFFECTER_COUNT_MIN ||
+	    composite_sensor_count > PLDM_COMPOSITE_EFFECTER_COUNT_MAX) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	int rc =
+	    encode_pldm_header(instance_id, PLDM_PLATFORM,
+			       PLDM_SET_STATE_SENSOR_ENABLE, PLDM_REQUEST, msg);
+	if (rc != PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_state_sensor_enable_req *request =
+	    (struct pldm_set_state_sensor_enable_req *)msg->payload;
+	request->sensor_id = htole16(sensor_id);
+	request->composite_sensor_count = composite_sensor_count;
+
+	for (itr = 0; itr < composite_sensor_count; ++itr) {
+		if (!is_state_sensor_op_field_valid(
+			(op_fields + itr)->sensor_operational_state,
+			(op_fields + itr)->event_message_enable)) {
+			return PLDM_ERROR_INVALID_DATA;
+		}
+		memcpy(&request->op_field[itr], op_fields + itr,
+		       sizeof(state_sensor_op_field));
+	}
+	return PLDM_SUCCESS;
+}
+
+int encode_set_numeric_effecter_enable_req(
+    const uint8_t instance_id, const uint16_t effecter_id,
+    const uint8_t effecter_operational_state, struct pldm_msg *msg)
+{
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (effecter_operational_state > PLDM_SENSOR_UNAVAILABLE) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	int rc = PLDM_SUCCESS;
+	if ((rc = encode_pldm_header(instance_id, PLDM_PLATFORM,
+				     PLDM_SET_NUMERIC_EFFECTER_ENABLE,
+				     PLDM_REQUEST, msg)) != PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_numeric_effecter_enable_req *request =
+	    (struct pldm_set_numeric_effecter_enable_req *)msg->payload;
+	request->effecter_id = htole16(effecter_id);
+	request->effecter_operational_state = effecter_operational_state;
+	return PLDM_SUCCESS;
+}
+
+static bool is_state_effecter_op_field_valid(uint8_t event_message_enable,
+					     uint8_t effecter_operational_state)
+{
+	if ((event_message_enable > PLDM_ENABLE_EVENTS &&
+	     event_message_enable != PLDM_NO_CHANGE_EVENTS) ||
+	    effecter_operational_state > EFFECTER_OPER_STATE_INTEST) {
+		return false;
+	}
+	return true;
+}
+
+int encode_set_state_effecter_enable_req(const uint8_t instance_id,
+					 const uint16_t effecter_id,
+					 const uint8_t composite_effecter_count,
+					 state_effecter_op_field *op_fields,
+					 struct pldm_msg *msg)
+{
+	uint8_t itr = 0;
+
+	if (msg == NULL || op_fields == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if (composite_effecter_count < PLDM_COMPOSITE_EFFECTER_COUNT_MIN ||
+	    composite_effecter_count > PLDM_COMPOSITE_EFFECTER_COUNT_MAX) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	int rc = rc = encode_pldm_header(instance_id, PLDM_PLATFORM,
+					 PLDM_SET_STATE_EFFECTER_ENABLE,
+					 PLDM_REQUEST, msg);
+	if (rc != PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_set_state_effecter_enable_req *request =
+	    (struct pldm_set_state_effecter_enable_req *)msg->payload;
+	request->effecter_id = htole16(effecter_id);
+	request->composite_effecter_count = composite_effecter_count;
+
+	for (itr = 0; itr < composite_effecter_count; ++itr) {
+		if (!is_state_effecter_op_field_valid(
+			(op_fields + itr)->event_message_enable,
+			(op_fields + itr)->effecter_operational_state)) {
+			return PLDM_ERROR_INVALID_DATA;
+		}
+		memcpy(&request->op_field[itr], op_fields + itr,
+		       sizeof(state_effecter_op_field));
+	}
+	return PLDM_SUCCESS;
+}
+
+int encode_get_state_effecter_states_req(const uint8_t instance_id,
+					 const uint16_t effecter_id,
+					 struct pldm_msg *msg)
+{
+	int rc = PLDM_SUCCESS;
+
+	if (msg == NULL) {
+		return PLDM_ERROR_INVALID_DATA;
+	}
+
+	if ((rc = encode_pldm_header(instance_id, PLDM_PLATFORM,
+				     PLDM_GET_STATE_EFFECTER_STATES,
+				     PLDM_REQUEST, msg)) != PLDM_SUCCESS) {
+		return rc;
+	}
+
+	struct pldm_get_state_effecter_states_req *request =
+	    (struct pldm_get_state_effecter_states_req *)msg->payload;
+	request->effecter_id = htole16(effecter_id);
 
 	return PLDM_SUCCESS;
 }

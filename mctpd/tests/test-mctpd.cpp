@@ -105,6 +105,11 @@ TEST_F(MctpdBaseTest, BaseIfPropertyTest)
         .Times(1)
         .WillRepeatedly(Return(true));
 
+    EXPECT_CALL(*objectServerMock->dbusIfMock,
+                register_method(StrEq("SendReceiveMctpMessagePayload")))
+        .Times(1)
+        .WillRepeatedly(Return(true));
+
     EXPECT_CALL(
         *objectServerMock->dbusIfMock,
         register_property(StrEq("ArpMasterSupport"), An<bool>(),
@@ -135,7 +140,7 @@ TEST_F(MctpdBaseTest, BaseIfPropertyTest)
 
     std::unique_ptr<MctpBinding> bindingPtr = std::make_unique<SMBusBinding>(
         objectServerMock, mctpBaseObj, testConfiguration, ioc);
-    bindingPtr->initializeBinding(this->testConfiguration);
+    bindingPtr->initializeBinding();
 }
 
 int main(int argc, char** argv)

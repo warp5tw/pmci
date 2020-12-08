@@ -14,9 +14,9 @@ class SMBusBinding : public MctpBinding
                  std::string& objPath, ConfigurationVariant& conf,
                  boost::asio::io_context& ioc);
     virtual ~SMBusBinding();
-    virtual void initializeBinding(ConfigurationVariant& conf) override;
-    virtual bool getBindingPrivateData(uint8_t dstEid,
-                                       std::vector<uint8_t>& pvtData) override;
+    virtual void initializeBinding() override;
+    virtual std::optional<std::vector<uint8_t>>
+        getBindingPrivateData(uint8_t dstEid) override;
     virtual bool handleGetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
                                      std::vector<uint8_t>& request,
                                      std::vector<uint8_t>& response) override;
@@ -24,7 +24,7 @@ class SMBusBinding : public MctpBinding
   private:
     void SMBusInit();
     void readResponse();
-    void initEndpointDiscovery(ConfigurationVariant& conf);
+    void initEndpointDiscovery();
     std::string bus;
     bool arpMasterSupport;
     uint8_t bmcSlaveAddr;

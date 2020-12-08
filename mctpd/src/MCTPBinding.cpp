@@ -21,9 +21,212 @@ const std::unordered_map<uint8_t, version_entry> versionNumbers = {
     {MCTP_MESSAGE_TYPE_MCTP_CTRL, {0xF1, 0xF3, 0xF1, 0}},
     {MCTP_GET_VERSION_SUPPORT_BASE_INFO, {0xF1, 0xF3, 0xF1, 0}}};
 
+/* According DSP0239(Version: 1.7.0) */
+static const std::unordered_map<uint8_t,
+                                mctp_server::MctpPhysicalMediumIdentifiers>
+    valueToMediumId = {
+        /*0x00 Unspecified*/
+        {0x01,
+         mctp_server::MctpPhysicalMediumIdentifiers::Smbus}, /*SMBus 2.0 100 kHz
+                                                                compatible*/
+        {0x02, mctp_server::MctpPhysicalMediumIdentifiers::
+                   SmbusI2c}, /*SMBus 2.0 + I2C 100 kHz compatible*/
+        {0x03, mctp_server::MctpPhysicalMediumIdentifiers::
+                   I2cCompatible}, /*I2C 100 kHz compatible (Standard-mode)*/
+        {0x04, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Smbus3OrI2c400khzCompatible}, /*SMBus 3.0 or I2C 400 kHz
+                                                    compatible (Fast-mode)*/
+        {0x05, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Smbus3OrI2c1MhzCompatible}, /*SMBus 3.0 or I2C 1 MHz
+                                                  compatible (Fast-mode Plus)*/
+        {0x06,
+         mctp_server::MctpPhysicalMediumIdentifiers::
+             I2c3Mhz4Compatible}, /*I2C 3.4 MHz compatible (High-speed mode)*/
+        /*0x07 Reserved*/
+        {0x08, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Pcie11}, /*PCIe revision 1.1 compatible*/
+        {0x09,
+         mctp_server::MctpPhysicalMediumIdentifiers::Pcie2}, /*PCIe revision 2.0
+                                                                compatible*/
+        {0x0A, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Pcie21}, /*PCIe revision 2.1 compatible*/
+        {0x0B,
+         mctp_server::MctpPhysicalMediumIdentifiers::Pcie3}, /*PCIe revision 3.x
+                                                                compatible*/
+        {0x0C,
+         mctp_server::MctpPhysicalMediumIdentifiers::Pcie4}, /*PCIe revision 4.x
+                                                                compatible*/
+        {0x0D,
+         mctp_server::MctpPhysicalMediumIdentifiers::Pcie5}, /*PCIe revision 5.x
+                                                                compatible*/
+        /*0x0E Reserved*/
+        {0x0F, mctp_server::MctpPhysicalMediumIdentifiers::
+                   PciCompatible}, /*PCI compatible
+                                      (PCI 1.0,2.0,2.1,2.2,2.3,3.0,PCI-X 1.0,
+                                      PCI-X 2.0)*/
+        {0x10, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Usb11Compatible}, /*USB 1.1 compatible*/
+        {0x11, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Usb20Compatible}, /*USB 2.0 compatible*/
+        {0x12, mctp_server::MctpPhysicalMediumIdentifiers::
+                   Usb30Compatible}, /*USB 3.0 compatible*/
+        /*0x13:0x17 Reserved*/
+        {0x18, mctp_server::MctpPhysicalMediumIdentifiers::
+                   NcSiOverRbt}, /*NC-SI over RBT (A physical interface based on
+                                    RMII as defined inDSP0222)*/
+        /*0x19:0x1F Reserved*/
+        {0x20, mctp_server::MctpPhysicalMediumIdentifiers::
+                   KcsLegacy}, /*KCS / Legacy (Fixed Address Decoding)*/
+        {0x21, mctp_server::MctpPhysicalMediumIdentifiers::
+                   KcsPci}, /*KCS / PCI (Base Class 0xC0 Subclass 0x01)*/
+        {0x22, mctp_server::MctpPhysicalMediumIdentifiers::
+                   SerialHostLegacy}, /*Serial Host / Legacy (Fixed Address
+                                         Decoding)*/
+        {0x23, mctp_server::MctpPhysicalMediumIdentifiers::
+                   SerialHostPci}, /*Serial Host / PCI (Base Class 0x07 Subclass
+                                      0x00)*/
+        {0x24,
+         mctp_server::MctpPhysicalMediumIdentifiers::
+             AsynchronousSerial}, /*Asynchronous Serial3(Between MCs and IMDs)*/
+        {0x30, mctp_server::MctpPhysicalMediumIdentifiers::
+                   I3cSDR}, /*I3C 12.5 MHz compatible (SDR)*/
+        {0x31, mctp_server::MctpPhysicalMediumIdentifiers::
+                   I3cHDRDDR} /*I3C 25 MHz compatible (HDR-DDR)*/
+                              /*0x32:0x3F Reserved */
+                              /*0x40, CXL 1.x*/
+                              /*0x41:0xFF Reserved*/
+};
+
 static uint8_t getInstanceId(const uint8_t msg)
 {
     return msg & MCTP_CTRL_HDR_INSTANCE_ID_MASK;
+}
+
+MctpTransmissionQueue::Message::Message(size_t index_,
+                                        std::vector<uint8_t>&& payload_,
+                                        std::vector<uint8_t>&& privateData_,
+                                        boost::asio::io_context& ioc) :
+    index(index_),
+    payload(std::move(payload_)), privateData(std::move(privateData_)),
+    timer(ioc)
+{
+}
+
+std::optional<uint8_t> MctpTransmissionQueue::Tags::next() const
+{
+    if (!bits)
+    {
+        return std::nullopt;
+    }
+    return static_cast<uint8_t>(__builtin_ctz(bits));
+}
+
+void MctpTransmissionQueue::Tags::emplace(uint8_t flag)
+{
+    bits |= static_cast<uint8_t>(1 << flag);
+}
+
+void MctpTransmissionQueue::Tags::erase(uint8_t flag)
+{
+    bits &= static_cast<uint8_t>(~(1 << flag));
+}
+
+std::shared_ptr<MctpTransmissionQueue::Message> MctpTransmissionQueue::transmit(
+    struct mctp* mctp, mctp_eid_t destEid, std::vector<uint8_t>&& payload,
+    std::vector<uint8_t>&& privateData, boost::asio::io_context& ioc)
+{
+    auto& endpoint = endpoints[destEid];
+    auto msgIndex = endpoint.msgCounter++;
+    auto message = std::make_shared<Message>(msgIndex, std::move(payload),
+                                             std::move(privateData), ioc);
+    endpoint.queuedMessages.emplace(msgIndex, message);
+    endpoint.transmitQueuedMessages(mctp, destEid);
+    return message;
+}
+
+void MctpTransmissionQueue::Endpoint::transmitQueuedMessages(struct mctp* mctp,
+                                                             mctp_eid_t destEid)
+{
+    while (!queuedMessages.empty())
+    {
+        const std::optional<uint8_t> nextTag = availableTags.next();
+        if (!nextTag)
+        {
+            break;
+        }
+        auto msgTag = nextTag.value();
+        auto queuedMessageIter = queuedMessages.begin();
+        auto message = std::move(queuedMessageIter->second);
+        queuedMessages.erase(queuedMessageIter);
+
+        int rc = mctp_message_tx(mctp, destEid, message->payload.data(),
+                                 message->payload.size(), true, msgTag,
+                                 message->privateData.data());
+        if (rc < 0)
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Error in mctp_message_tx");
+            continue;
+        }
+
+        availableTags.erase(msgTag);
+        message->tag = msgTag;
+        transmittedMessages.emplace(msgTag, std::move(message));
+    }
+}
+
+bool MctpTransmissionQueue::receive(struct mctp* mctp, mctp_eid_t srcEid,
+                                    uint8_t msgTag,
+                                    std::vector<uint8_t>&& response,
+                                    boost::asio::io_context& ioc)
+{
+    auto endpointIter = endpoints.find(srcEid);
+    if (endpointIter == endpoints.end())
+    {
+        return false;
+    }
+
+    auto& endpoint = endpointIter->second;
+    auto messageIter = endpoint.transmittedMessages.find(msgTag);
+    if (messageIter == endpoint.transmittedMessages.end())
+    {
+        return false;
+    }
+
+    const auto message = messageIter->second;
+    message->response = std::move(response);
+    endpoint.transmittedMessages.erase(messageIter);
+    message->tag.reset();
+    endpoint.availableTags.emplace(msgTag);
+
+    // Now that another tag is available, try to transmit any queued messages
+    message->timer.cancel();
+    ioc.post([this, mctp, srcEid] {
+        endpoints[srcEid].transmitQueuedMessages(mctp, srcEid);
+    });
+    return true;
+}
+
+void MctpTransmissionQueue::dispose(mctp_eid_t destEid,
+                                    const std::shared_ptr<Message>& message)
+{
+    auto& endpoint = endpoints[destEid];
+    auto queuedMessageIter = endpoint.queuedMessages.find(message->index);
+    if (queuedMessageIter != endpoint.queuedMessages.end())
+    {
+        endpoint.queuedMessages.erase(queuedMessageIter);
+    }
+    if (message->tag)
+    {
+        auto msgTag = message->tag.value();
+        endpoint.availableTags.emplace(msgTag);
+
+        auto transmittedMessageIter = endpoint.transmittedMessages.find(msgTag);
+        if (transmittedMessageIter != endpoint.transmittedMessages.end())
+        {
+            endpoint.transmittedMessages.erase(transmittedMessageIter);
+        }
+    }
 }
 
 void MctpBinding::handleCtrlResp(void* msg, const size_t len)
@@ -84,23 +287,32 @@ void MctpBinding::rxMessage(uint8_t srcEid, void* data, void* msg, size_t len,
 
     response.assign(payload, payload + len);
 
+    auto& binding = *static_cast<MctpBinding*>(data);
+
     if (msgType != MCTP_MESSAGE_TYPE_MCTP_CTRL)
     {
+        if (!tagOwner &&
+            binding.transmissionQueue.receive(binding.mctp, srcEid, msgTag,
+                                              std::move(response), binding.io))
+        {
+            return;
+        }
+
         auto msgSignal =
             conn->new_signal("/xyz/openbmc_project/mctp",
                              mctp_server::interface, "MessageReceivedSignal");
         msgSignal.append(msgType, srcEid, msgTag, tagOwner, response);
         msgSignal.signal_send();
+        return;
     }
 
-    auto* binding = static_cast<MctpBinding*>(data);
     // TODO: Take into account the msgTags too when we verify control messages.
-    if (mctp_is_mctp_ctrl_msg(msg, len) && !mctp_ctrl_msg_is_req(msg, len) &&
-        !tagOwner)
+    if (!tagOwner && mctp_is_mctp_ctrl_msg(msg, len) &&
+        !mctp_ctrl_msg_is_req(msg, len))
     {
         phosphor::logging::log<phosphor::logging::level::INFO>(
             "MCTP Control packet response received!!");
-        binding->handleCtrlResp(msg, len);
+        binding.handleCtrlResp(msg, len);
     }
 }
 
@@ -125,15 +337,19 @@ void MctpBinding::handleMCTPControlRequests(uint8_t srcEid, void* data,
             "MCTP Control Message expects that tagOwner is set");
         return;
     }
-    auto* binding = static_cast<MctpBinding*>(data);
-    binding->handleCtrlReq(srcEid, bindingPrivate, msg, len, msgTag);
+    auto& binding = *static_cast<MctpBinding*>(data);
+    binding.handleCtrlReq(srcEid, bindingPrivate, msg, len, msgTag);
 }
 
-bool MctpBinding::getBindingPrivateData(uint8_t /*dstEid*/,
-                                        std::vector<uint8_t>& pvtData)
+std::optional<std::vector<uint8_t>>
+    MctpBinding::getBindingPrivateData(uint8_t /*dstEid*/)
 {
     // No Binding data by default
-    pvtData.clear();
+    return std::vector<uint8_t>();
+}
+
+bool MctpBinding::isReceivedPrivateDataCorrect(const void* /*bindingPrivate*/)
+{
     return true;
 }
 
@@ -209,18 +425,75 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
             "SendMctpMessagePayload",
             [this](uint8_t dstEid, uint8_t msgTag, bool tagOwner,
                    std::vector<uint8_t> payload) {
-                std::vector<uint8_t> pvtData;
+                std::optional<std::vector<uint8_t>> pvtData =
+                    getBindingPrivateData(dstEid);
+                if (pvtData)
+                {
+                    return mctp_message_tx(mctp, dstEid, payload.data(),
+                                           payload.size(), tagOwner, msgTag,
+                                           pvtData->data());
+                }
+                phosphor::logging::log<phosphor::logging::level::ERR>(
+                    "Invalid destination EID");
+                return -1;
+            });
 
-                if (!getBindingPrivateData(dstEid, pvtData))
+        mctpInterface->register_method(
+            "SendReceiveMctpMessagePayload",
+            [this](boost::asio::yield_context yield, uint8_t dstEid,
+                   std::vector<uint8_t> payload,
+                   uint16_t timeout) -> std::vector<uint8_t> {
+                uint8_t msgType = payload[0]; // Always the first byte
+                if (msgType == MCTP_MESSAGE_TYPE_MCTP_CTRL)
+                {
+                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "Cannot transmit control messages");
+                    throw std::system_error(
+                        std::make_error_code(std::errc::invalid_argument));
+                }
+
+                std::optional<std::vector<uint8_t>> pvtData =
+                    getBindingPrivateData(dstEid);
+                if (!pvtData)
                 {
                     phosphor::logging::log<phosphor::logging::level::ERR>(
                         "Invalid destination EID");
-                    return -1;
+                    throw std::system_error(
+                        std::make_error_code(std::errc::invalid_argument));
                 }
 
-                return mctp_message_tx(mctp, dstEid, payload.data(),
-                                       payload.size(), tagOwner, msgTag,
-                                       pvtData.data());
+                boost::system::error_code ec;
+                auto message =
+                    transmissionQueue.transmit(mctp, dstEid, std::move(payload),
+                                               std::move(pvtData).value(), io);
+
+                message->timer.expires_after(
+                    std::chrono::milliseconds(timeout));
+                message->timer.async_wait(yield[ec]);
+
+                if (ec && ec != boost::asio::error::operation_aborted)
+                {
+                    transmissionQueue.dispose(dstEid, message);
+                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "Timer failed");
+                    throw std::system_error(
+                        std::make_error_code(std::errc::connection_aborted));
+                }
+                if (!message->response)
+                {
+                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "No response");
+                    throw std::system_error(
+                        std::make_error_code(std::errc::timed_out));
+                }
+                if (message->response->empty())
+                {
+                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "Empty response");
+                    throw std::system_error(
+                        std::make_error_code(std::errc::no_message_available));
+                }
+                return std::move(message->response).value();
             });
 
         mctpInterface->register_signal<uint8_t, uint8_t, uint8_t, bool,
@@ -270,7 +543,7 @@ void MctpBinding::createUuid()
 
 void MctpBinding::initializeMctp()
 {
-    mctp_set_log_stdio(MCTP_LOG_INFO);
+    initializeLogging();
     mctp = mctp_init();
     if (!mctp)
     {
@@ -278,6 +551,24 @@ void MctpBinding::initializeMctp()
             "Failed to init mctp");
         throw std::system_error(
             std::make_error_code(std::errc::not_enough_memory));
+    }
+}
+
+void MctpBinding::initializeLogging(void)
+{
+    // Default log level
+    mctp_set_log_stdio(MCTP_LOG_INFO);
+
+    if (auto envPtr = std::getenv("MCTP_TRACES"))
+    {
+        std::string value(envPtr);
+        if (value == "1")
+        {
+            phosphor::logging::log<phosphor::logging::level::WARNING>(
+                "MCTP traces enabled, expect lower performance");
+            mctp_set_log_stdio(MCTP_LOG_DEBUG);
+            mctp_set_tracing_enabled(true);
+        }
     }
 }
 
@@ -441,10 +732,16 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
             "MCTP Control Request is not initialized.");
         return;
     }
+    if (!isReceivedPrivateDataCorrect(bindingPrivate))
+    {
+        phosphor::logging::log<phosphor::logging::level::INFO>(
+            "Binding Private Data is not correct.");
+        return;
+    }
 
     std::vector<uint8_t> response = {};
     bool sendResponse = false;
-    const uint8_t* reqPtr = reinterpret_cast<const uint8_t*>(req);
+    auto reqPtr = reinterpret_cast<const uint8_t*>(req);
     std::vector<uint8_t> request(reqPtr, reqPtr + len);
     mctp_ctrl_msg_hdr* reqHeader =
         reinterpret_cast<mctp_ctrl_msg_hdr*>(request.data());
@@ -484,6 +781,11 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
                                                    request, response);
             break;
         }
+        case MCTP_CTRL_CMD_GET_VENDOR_MESSAGE_SUPPORT: {
+            sendResponse =
+                handleGetVdmSupport(destEid, bindingPrivate, request, response);
+            break;
+        }
         default: {
             phosphor::logging::log<phosphor::logging::level::ERR>(
                 "Message not supported");
@@ -492,9 +794,8 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
 
     if (sendResponse)
     {
-        mctp_ctrl_msg_hdr* respHeader =
-            reinterpret_cast<mctp_ctrl_msg_hdr*>(response.data());
-        memcpy(respHeader, reqHeader, sizeof(struct mctp_ctrl_msg_hdr));
+        auto respHeader = reinterpret_cast<mctp_ctrl_msg_hdr*>(response.data());
+        *respHeader = *reqHeader;
         respHeader->rq_dgram_inst &=
             static_cast<uint8_t>(~MCTP_CTRL_HDR_FLAG_REQUEST);
         mctp_message_tx(mctp, destEid, response.data(), response.size(), false,
@@ -526,8 +827,7 @@ bool MctpBinding::handleGetEndpointId(mctp_eid_t destEid, void*,
                                       std::vector<uint8_t>& response)
 {
     response.resize(sizeof(mctp_ctrl_resp_get_eid));
-    struct mctp_ctrl_resp_get_eid* resp =
-        reinterpret_cast<mctp_ctrl_resp_get_eid*>(response.data());
+    auto resp = reinterpret_cast<mctp_ctrl_resp_get_eid*>(response.data());
 
     bool busownerMode =
         bindingModeType == mctp_server::BindingModeTypes::BusOwner ? true
@@ -545,10 +845,8 @@ bool MctpBinding::handleSetEndpointId(mctp_eid_t destEid, void*,
         return false;
     }
     response.resize(sizeof(mctp_ctrl_resp_set_eid));
-    struct mctp_ctrl_resp_set_eid* resp =
-        reinterpret_cast<mctp_ctrl_resp_set_eid*>(response.data());
-    struct mctp_ctrl_cmd_set_eid* req =
-        reinterpret_cast<mctp_ctrl_cmd_set_eid*>(request.data());
+    auto resp = reinterpret_cast<mctp_ctrl_resp_set_eid*>(response.data());
+    auto req = reinterpret_cast<mctp_ctrl_cmd_set_eid*>(request.data());
 
     mctp_ctrl_cmd_set_endpoint_id(mctp, destEid, req, resp);
     if (resp->completion_code == MCTP_CTRL_CC_SUCCESS)
@@ -564,9 +862,9 @@ bool MctpBinding::handleGetVersionSupport(mctp_eid_t, void*,
                                           std::vector<uint8_t>& response)
 {
     response.resize(sizeof(mctp_ctrl_resp_get_mctp_ver_support));
-    mctp_ctrl_cmd_get_mctp_ver_support* req =
+    auto req =
         reinterpret_cast<mctp_ctrl_cmd_get_mctp_ver_support*>(request.data());
-    mctp_ctrl_resp_get_mctp_ver_support* resp =
+    auto resp =
         reinterpret_cast<mctp_ctrl_resp_get_mctp_ver_support*>(response.data());
 
     std::vector<version_entry> versions = {};
@@ -582,11 +880,9 @@ bool MctpBinding::handleGetVersionSupport(mctp_eid_t, void*,
         resp->completion_code = MCTP_CTRL_CC_SUCCESS;
     }
     resp->number_of_entries = static_cast<uint8_t>(versions.size());
-    response.resize(sizeof(mctp_ctrl_resp_get_mctp_ver_support) +
-                    versions.size() * sizeof(version_entry));
-    std::copy_n(reinterpret_cast<uint8_t*>(versions.data()),
-                versions.size() * sizeof(version_entry),
-                response.data() + sizeof(mctp_ctrl_resp_get_mctp_ver_support));
+    std::copy(reinterpret_cast<uint8_t*>(versions.data()),
+              reinterpret_cast<uint8_t*>(versions.data() + versions.size()),
+              std::back_inserter(response));
     return true;
 }
 
@@ -594,20 +890,14 @@ bool MctpBinding::handleGetMsgTypeSupport(mctp_eid_t, void*,
                                           std::vector<uint8_t>&,
                                           std::vector<uint8_t>& response)
 {
+    response.resize(sizeof(mctp_ctrl_resp_get_msg_type_support));
     std::vector<uint8_t> supportedMsgTypes = getBindingMsgTypes();
-    response.resize(sizeof(mctp_ctrl_resp_get_msg_type_support) +
-                    supportedMsgTypes.size() * sizeof(msg_type_entry));
-
-    mctp_ctrl_resp_get_msg_type_support* resp =
+    auto resp =
         reinterpret_cast<mctp_ctrl_resp_get_msg_type_support*>(response.data());
     resp->completion_code = MCTP_CTRL_CC_SUCCESS;
     resp->msg_type_count = static_cast<uint8_t>(supportedMsgTypes.size());
-
-
-    std::copy_n(supportedMsgTypes.data(),
-                supportedMsgTypes.size() * sizeof(msg_type_entry),
-                response.data() + sizeof(mctp_ctrl_resp_get_msg_type_support));
-
+    std::copy(supportedMsgTypes.begin(), supportedMsgTypes.end(),
+              std::back_inserter(response));
     return true;
 }
 
@@ -617,6 +907,16 @@ std::vector<uint8_t> MctpBinding::getBindingMsgTypes()
     // supported by upper layer applications
     std::vector<uint8_t> bindingMsgTypes = {MCTP_MESSAGE_TYPE_MCTP_CTRL};
     return bindingMsgTypes;
+}
+
+bool MctpBinding::handleGetVdmSupport(
+    [[maybe_unused]] mctp_eid_t destEid, [[maybe_unused]] void* bindingPrivate,
+    [[maybe_unused]] std::vector<uint8_t>& request,
+    [[maybe_unused]] std::vector<uint8_t>& response)
+{
+    phosphor::logging::log<phosphor::logging::level::ERR>(
+        "Message not supported");
+    return false;
 }
 
 void MctpBinding::pushToCtrlTxQueue(
@@ -1266,6 +1566,18 @@ MsgTypes MctpBinding::getMsgTypes(const std::vector<uint8_t>& msgType)
     return messageTypes;
 }
 
+bool MctpBinding::setMediumId(
+    uint8_t value, mctp_server::MctpPhysicalMediumIdentifiers& mediumId)
+{
+    auto id = valueToMediumId.find(value);
+    if (id != valueToMediumId.end())
+    {
+        mediumId = id->second;
+        return true;
+    }
+    return false;
+}
+
 static std::string formatUUID(guid_t& uuid)
 {
     const size_t safeBufferLength = 50;
@@ -1406,10 +1718,10 @@ std::optional<mctp_eid_t> MctpBinding::busOwnerRegisterEndpoint(
 std::optional<mctp_eid_t>
     MctpBinding::registerEndpoint(boost::asio::yield_context& yield,
                                   const std::vector<uint8_t>& bindingPrivate,
-                                  bool isBusOwner, mctp_eid_t eid,
+                                  mctp_eid_t eid,
                                   mctp_server::BindingModeTypes bindingMode)
 {
-    if (isBusOwner)
+    if (bindingModeType == mctp_server::BindingModeTypes::BusOwner)
     {
         return busOwnerRegisterEndpoint(yield, bindingPrivate);
     }

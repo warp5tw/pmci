@@ -49,8 +49,15 @@ extern "C" {
 #define PLDM_PDR_REPOSITORY_CHG_EVENT_MIN_LENGTH 2
 #define PLDM_PDR_REPOSITORY_CHANGE_RECORD_MIN_LENGTH 2
 
+/* Minumum PDR length*/
+#define PLDM_NUMERIC_SENSOR_PDR_MIN_LENGTH 69
+#define PLDM_NUMERIC_EFFECTER_PDR_MIN_LENGTH 63
+
 #define PLDM_INVALID_EFFECTER_ID 0xFFFF
 #define PLDM_TID_RESERVED 0xFF
+
+#define PLDM_COMPOSITE_EFFECTER_COUNT_MIN 0x01
+#define PLDM_COMPOSITE_EFFECTER_COUNT_MAX 0x08
 
 enum pldm_pdr_repository_state {
 	PLDM_PDR_REPOSITORY_STATE_AVAILABLE,
@@ -103,6 +110,12 @@ enum pldm_sensor_event_message_enable {
 	PLDM_STATE_EVENTS_ONLY_ENABLED
 };
 
+enum pldm_state_event_message_enable {
+	PLDM_DISABLE_EVENTS,
+	PLDM_ENABLE_EVENTS,
+	PLDM_NO_CHANGE_EVENTS = 0xff
+};
+
 enum pldm_effecter_oper_state {
 	EFFECTER_OPER_STATE_ENABLED_UPDATEPENDING,
 	EFFECTER_OPER_STATE_ENABLED_NOUPDATEPENDING,
@@ -116,6 +129,7 @@ enum pldm_effecter_oper_state {
 };
 
 enum pldm_platform_commands {
+	PLDM_GET_TERMINUS_UID = 0x03,
 	//Terminus commands
 	PLDM_SETTID = 0x1,
 	PLDM_GETTID = 0x2,
@@ -126,12 +140,16 @@ enum pldm_platform_commands {
 	PLDM_SET_SENSOR_THRESHOLD = 0x13,
 	PLDM_GET_SENSOR_HYSTERESIS = 0x15,
 	PLDM_SET_SENSOR_HYSTERESIS = 0x16,
+	PLDM_SET_STATE_SENSOR_ENABLE = 0x20,
 	//State Sensor commands
 	PLDM_GET_STATE_SENSOR_READINGS = 0x21,
+	PLDM_SET_NUMERIC_EFFECTER_ENABLE = 0x30,
 	//PLDM Effecter commands
 	PLDM_SET_NUMERIC_EFFECTER_VALUE = 0x31,
 	PLDM_GET_NUMERIC_EFFECTER_VALUE = 0x32,
+	PLDM_SET_STATE_EFFECTER_ENABLE = 0x38,
 	PLDM_SET_STATE_EFFECTER_STATES = 0x39,
+	PLDM_GET_STATE_EFFECTER_STATES = 0x3A,
 	PLDM_GET_PDR_REPOSITORY_INFO = 0x50,
 	PLDM_GET_PDR = 0x51,
 	PLDM_PLATFORM_EVENT_MESSAGE = 0x0A
@@ -222,6 +240,18 @@ enum pldm_sensor_operational_state {
 	PLDM_SENSOR_INITIALIZING,
 	PLDM_SENSOR_SHUTTINGDOWN,
 	PLDM_SENSOR_INTEST
+};
+
+/** @brief PLDM NumericSensorUnits enumeration
+ */
+enum pldm_sensor_unit {
+	PLDM_SENSOR_UNIT_DEGREES_C = 2,
+	PLDM_SENSOR_UNIT_VOLTS = 5,
+	PLDM_SENSOR_UNIT_AMPS = 6,
+	PLDM_SENSOR_UNIT_WATTS = 7,
+	PLDM_SENSOR_UNIT_RPM = 19,
+	PLDM_SENSOR_UNIT_SECONDS = 21
+	// TODO: Add other sensor units
 };
 
 /** @brief PLDM pldmPDRRepositoryChgEvent class eventData format
@@ -334,15 +364,41 @@ struct pldm_pdr_entity_association {
  */
 struct pldm_pdr_entity_auxiliary_names {
 	struct pldm_pdr_hdr hdr;
-	pldm_entity container;
+	pldm_entity entity;
 	uint8_t shared_name_count;
 	uint8_t name_string_count;
 	uint8_t entity_auxiliary_names[1];
 } __attribute__((packed));
 
+/** @struct pldm_sensor_auxiliary_names_pdr
+ *
+ *  Structure representing PLDM Sensor Auxiliary Names PDR
+ */
+struct pldm_sensor_auxiliary_names_pdr {
+	struct pldm_pdr_hdr hdr;
+	uint16_t terminus_handle;
+	uint16_t sensor_id;
+	uint8_t sensor_count;
+	uint8_t name_string_count;
+	uint8_t sensor_auxiliary_names[1];
+} __attribute__((packed));
+
+/** @struct pldm_effecter_auxiliary_names_pdr
+ *
+ *  Structure representing PLDM Effecter Auxiliary Names PDR
+ */
+struct pldm_effecter_auxiliary_names_pdr {
+	struct pldm_pdr_hdr hdr;
+	uint16_t terminus_handle;
+	uint16_t effecter_id;
+	uint8_t effecter_count;
+	uint8_t name_string_count;
+	uint8_t effecter_auxiliary_names[1];
+} __attribute__((packed));
+
 /** @struct pldm_pdr_fru_record_set
  *
- *  Structure representing PLDM FRU record set PDR
+ *  Structure representing PLDM FRU record set
  */
 struct pldm_pdr_fru_record_set {
 	uint16_t terminus_handle;
@@ -350,6 +406,15 @@ struct pldm_pdr_fru_record_set {
 	uint16_t entity_type;
 	uint16_t entity_instance_num;
 	uint16_t container_id;
+} __attribute__((packed));
+
+/** @struct pldm_fru_record_set_pdr
+ *
+ *  Structure representing PLDM FRU record set PDR
+ */
+struct pldm_fru_record_set_pdr {
+	struct pldm_pdr_hdr hdr;
+	struct pldm_pdr_fru_record_set fru_record_set;
 } __attribute__((packed));
 
 /** @struct pldm_state_sensor_pdr
@@ -493,6 +558,71 @@ struct pldm_numeric_effecter_value_pdr {
 	union_range_field_format rated_min;
 } __attribute__((packed));
 
+/** @union union_sensor_data_size
+ *
+ *  The bit width and format of reading and threshold values that the sensor
+ *  returns.
+ *  Refer to: DSP0248_1.2.0: 28.4 Table 78
+ */
+typedef union {
+	uint8_t value_u8;
+	int8_t value_s8;
+	uint16_t value_u16;
+	int16_t value_s16;
+	uint32_t value_u32;
+	int32_t value_s32;
+} union_sensor_data_size;
+
+/** @struct pldm_numeric_sensor_value_pdr
+ *
+ *  Structure representing PLDM Numeric Sensor PDR
+ *  Refer to: DSP0248_1.2.0: 28.4 Table 78
+ */
+struct pldm_numeric_sensor_value_pdr {
+	struct pldm_pdr_hdr hdr;
+	uint16_t terminus_handle;
+	uint16_t sensor_id;
+	uint16_t entity_type;
+	uint16_t entity_instance_num;
+	uint16_t container_id;
+	uint8_t sensor_init;
+	bool8_t sensor_auxiliary_names_pdr;
+	uint8_t base_unit;
+	int8_t unit_modifier;
+	uint8_t rate_unit;
+	uint8_t base_oem_unit_handle;
+	uint8_t aux_unit;
+	int8_t aux_unit_modifier;
+	uint8_t auxrate_unit;
+	uint8_t rel;
+	uint8_t aux_oem_unit_handle;
+	bool8_t is_linear;
+	uint8_t sensor_data_size;
+	real32_t resolution;
+	real32_t offset;
+	uint16_t accuracy;
+	uint8_t plus_tolerance;
+	uint8_t minus_tolerance;
+	union_sensor_data_size hysteresis;
+	bitfield8_t supported_thresholds;
+	bitfield8_t threshold_and_hysteresis_volatility;
+	real32_t state_transition_interval;
+	real32_t update_interval;
+	union_sensor_data_size max_readable;
+	union_sensor_data_size min_readable;
+	uint8_t range_field_format;
+	bitfield8_t range_field_support;
+	union_range_field_format nominal_value;
+	union_range_field_format normal_max;
+	union_range_field_format normal_min;
+	union_range_field_format warning_high;
+	union_range_field_format warning_low;
+	union_range_field_format critical_high;
+	union_range_field_format critical_low;
+	union_range_field_format fatal_high;
+	union_range_field_format fatal_low;
+} __attribute__((packed));
+
 /** @struct state_effecter_possible_states
  *
  *  Structure representing state enums for state effecter
@@ -609,6 +739,14 @@ struct pldm_get_state_sensor_readings_req {
 	uint8_t reserved;
 } __attribute__((packed));
 
+/** @struct pldm_get_state_effecter_states_req
+ *
+ *  Structure representing PLDM get state effecter states request.
+ */
+struct pldm_get_state_effecter_states_req {
+	uint16_t effecter_id;
+} __attribute__((packed));
+
 /** @struct pldm_get_state_sensor_readings_resp
  *
  *  Structure representing PLDM get state sensor readings response.
@@ -721,12 +859,59 @@ struct pldm_get_numeric_effecter_value_resp {
 
 /** @struct pldm_set_numeric_sensor_enable_req
  *
- *  Structure representing PLDM set_numeric_sensor_enable request
+ *  Structure representing PLDM SetNumericSensorEnable request
  */
 struct pldm_set_numeric_sensor_enable_req {
 	uint16_t sensor_id;
 	uint8_t sensor_operational_state;
 	uint8_t sensor_event_message_enable;
+} __attribute__((packed));
+
+/** @struct pldm_set_numeric_effecter_enable_req
+ *
+ *  Structure representing PLDM SetNumericSensorEnable request
+ */
+struct pldm_set_numeric_effecter_enable_req {
+	uint16_t effecter_id;
+	uint8_t effecter_operational_state;
+} __attribute__((packed));
+
+/** @struct pldm_state_sensor_op_field
+ *
+ *  Structure representing PLDM SetStateSensorEnables opField format
+ */
+typedef struct pldm_state_sensor_op_field {
+	uint8_t sensor_operational_state;
+	uint8_t event_message_enable;
+} __attribute__((packed)) state_sensor_op_field;
+
+/** @struct pldm_set_state_sensor_enable_req
+ *
+ *  Structure representing PLDM SetStateSensorEnables request
+ */
+struct pldm_set_state_sensor_enable_req {
+	uint16_t sensor_id;
+	uint8_t composite_sensor_count;
+	state_sensor_op_field op_field[1];
+} __attribute__((packed));
+
+/** @struct pldm_state_effecter_op_field
+ *
+ *  Structure representing PLDM SetStateSensorEnables opField format
+ */
+typedef struct pldm_state_effecter_op_field {
+	uint8_t effecter_operational_state;
+	uint8_t event_message_enable;
+} __attribute__((packed)) state_effecter_op_field;
+
+/** @struct pldm_set_state_effecter_enable_req
+ *
+ *  Structure representing PLDM SetStateSensorEnables request
+ */
+struct pldm_set_state_effecter_enable_req {
+	uint16_t effecter_id;
+	uint8_t composite_effecter_count;
+	state_effecter_op_field op_field[1];
 } __attribute__((packed));
 
 /** @struct pldm_get_sensor_reading_req
@@ -774,6 +959,15 @@ struct pldm_pdr_repository_info {
 struct pldm_get_pdr_repository_info_resp {
 	uint8_t completion_code;
 	struct pldm_pdr_repository_info pdr_repo_info;
+} __attribute__((packed));
+
+/** @struct pldm_get_terminus_uid_resp
+ *
+ *  Structure representing PLDM GetTerminusUID response
+ */
+struct pldm_get_terminus_uid_resp {
+	uint8_t completion_code; //!< Response completion code
+	uint8_t uuid[16];	 //!< 16byte UUID
 } __attribute__((packed));
 
 /* Responder */
@@ -1553,24 +1747,6 @@ int decode_pldm_pdr_repository_change_record_data(
     uint8_t *event_data_operation, uint8_t *number_of_change_entries,
     size_t *change_entry_data_offset);
 
-/* set_numeric_sensor_enable */
-
-/** @brief Encode set_numeric_sensor_enable request data
- *
- *  @param[in] instance_id - Message's instance id
- *  @param[in] sensor_id - A handle that is used to identify and access the
- *         sensor
- *  @param[in] rearm_event_state - true =  manually re-arm EventState after
- *         responding to this request, false = no manual re-arm
- *  @param[out] msg - Message will be written to this
- *  @return pldm_completion_codes
- *  @note	Caller is responsible for memory alloc and dealloc of param
- * 		'msg.payload'
- */
-int encode_set_numeric_sensor_enable_req(uint8_t instance_id, uint16_t sensor_id,
-				  uint8_t sensor_operational_state, uint8_t sensor_event_message_enable,
-				  struct pldm_msg *msg);
-
 /** @brief decode_set_numeric_sensor_enable response data
  *
  *  @param[in] msg - Request message
@@ -1627,7 +1803,6 @@ int decode_get_sensor_reading_resp(
     uint8_t *sensor_event_message_enable, uint8_t *present_state,
     uint8_t *previous_state, uint8_t *event_state, uint8_t *present_reading);
 
-<<<<<<< HEAD
 /* GetSensorThreshold */
 
 /** @brief Encode GetSensorThreshold request data
@@ -1749,7 +1924,7 @@ int encode_set_sensor_hysteresis_req(uint8_t instance_id,
 
 int decode_set_sensor_hysteresis_resp(
     const struct pldm_msg *msg, size_t payload_length, uint8_t *completion_code);
-=======
+
 /** @brief Encode GetPDRRepositoryInfo request data
  *
  *  @param[in] instance_id - Message's instance id
@@ -1770,7 +1945,113 @@ int decode_get_pdr_repository_info_resp(
     const struct pldm_msg *msg, const size_t payload_length,
     struct pldm_get_pdr_repository_info_resp *pdr_info);
 
->>>>>>> cea7a943012187041c95c6b047a44c9277b7f225
+/** @brief Encode GetTerminusUID request message
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[out] msg - Message will be written to this
+ *  @return pldm_completion_codes
+ */
+inline int encode_get_terminus_uid_req(const uint8_t instance_id,
+				       struct pldm_msg *msg)
+{
+	return encode_header_only_request(instance_id, PLDM_PLATFORM,
+					  PLDM_GET_TERMINUS_UID, msg);
+}
+
+/** @brief Decode GetTerminusUID response data
+ *
+ *  @param[in] msg - Response message
+ *  @param[in] payload_length - Length of response message payload
+ *  @param[out] completion_code - PLDM completion code
+ *  @param[out] uuid - 16 byte UUID of the device
+ *  @return pldm_completion_codes
+ */
+int decode_get_terminus_uid_resp(const struct pldm_msg *msg,
+				 const size_t payload_length,
+				 uint8_t *completion_code, uint8_t *uuid);
+
+/** @brief Encode SetNumericSensorEnable request
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[in] sensor_operational_state - The state of the sensor itself
+ *  @param[in] sensor_event_message_enable - value: { noEventGeneration,
+ *         eventsDisabled, eventsEnabled, opEventsOnlyEnabled,
+ *         stateEventsOnlyEnabled }
+ *  @param[out] msg - Response message
+ *
+ *  @return pldm_completion_codes
+ */
+int encode_set_numeric_sensor_enable_req(
+    const uint8_t instance_id, const uint16_t sensor_id,
+    const uint8_t sensor_operational_state,
+    const uint8_t sensor_event_message_enable, struct pldm_msg *msg);
+
+/** @brief Encode SetStateSensorEnables request
+ *
+ *  @param[in] instance_id - Message's instance id
+ *  @param[in] sensor_id - A handle that is used to identify and access the
+ *         sensor
+ *  @param[in] composite_sensor_count - Number of coposite sensors
+ *  @param[in] op_fields - SetStateSensorEnables opField - value:{{enabled,
+ * disabled, unavailable},{noChange, disableEvents, enableEvents,
+ * enableOpEventsOnly, enableStateEventsOnly}}
+ *  @param[out] msg - Encoded message
+ *
+ *  @return pldm_completion_codes
+ */
+int encode_set_state_sensor_enable_req(const uint8_t instance_id,
+				       const uint16_t sensor_id,
+				       const uint8_t composite_sensor_count,
+				       state_sensor_op_field *op_fields,
+				       struct pldm_msg *msg);
+
+/** @brief Encode SetNumericEffecterEnable request
+ *
+ *	@param[in] instance_id - Message's instance id
+ *	@param[in] effecter_id - A handle that is used to identify and access
+ *the effecter
+ *	@param[in] effecter_operational_state - The state of the effecter itself
+ *	@param[out] msg - Response message
+ *
+ *	@return pldm_completion_codes
+ */
+int encode_set_numeric_effecter_enable_req(
+    const uint8_t instance_id, const uint16_t effecter_id,
+    const uint8_t effecter_operational_state, struct pldm_msg *msg);
+
+/** @brief Encode SetStateEffecterEnables request
+ *
+ *	@param[in] instance_id - Message's instance id
+ *	@param[in] effecter_id - A handle that is used to identify and access
+ *the effecter
+ *	@param[in] composite_effecter_count - Number of coposite effecters
+ *	@param[in] op_fields - SetStateEffecterEnables opField -
+ *value:{{enabled, disabled, unavailable},{noChange, disableEvents,
+ *enableEvents, enableOpEventsOnly, enableStateEventsOnly}}
+ *	@param[out] msg - Encoded message
+ *
+ *	@return pldm_completion_codes
+ */
+int encode_set_state_effecter_enable_req(const uint8_t instance_id,
+					 const uint16_t effecter_id,
+					 const uint8_t composite_effecter_count,
+					 state_effecter_op_field *op_fields,
+					 struct pldm_msg *msg);
+
+/** @brief Encode GetStateEffecterStates request
+ *
+ *	@param[in] instance_id - Message's instance id
+ *	@param[in] effecter_id - A handle that is used to identify and access
+ *the effecter
+ *	@param[out] msg - Encoded message
+ *
+ *	@return pldm_completion_codes
+ */
+int encode_get_state_effecter_states_req(const uint8_t instance_id,
+					 const uint16_t effecter_id,
+					 struct pldm_msg *msg);
 #ifdef __cplusplus
 }
 #endif

@@ -10,6 +10,7 @@ extern "C" {
 #include <stdint.h>
 
 #include "pldm_types.h"
+#include "utils.h"
 
 /** @brief PLDM Commands
  */
@@ -78,8 +79,9 @@ typedef uint8_t pldm_type_t;
 #define PLDM_GET_TID_RESP_BYTES 2
 #define PLDM_SET_TID_RESP_BYTES 1
 #define PLDM_GET_COMMANDS_RESP_BYTES 33
-/* Response data has only one version and does not contain the checksum */
-#define PLDM_GET_VERSION_RESP_BYTES 10
+
+/* Fixed bytes in GetVersion response not including verison data*/
+#define PLDM_GET_VERSION_RESP_FIXED_BYTES 6
 
 #define PLDM_VERSION_0 0
 #define PLDM_CURRENT_VERSION PLDM_VERSION_0
@@ -156,14 +158,6 @@ struct pldm_get_types_resp {
 	uint8_t completion_code; //!< completion code
 	bitfield8_t types[8]; //!< each bit represents whether a given PLDM Type
 			      //!< is supported
-} __attribute__((packed));
-
-/** @struct pldm_set_tid_req
- *
- *  Structure representing PLDM get commands request.
- */
-struct pldm_set_tid_req {
-	uint8_t tid;	 //!< terminus id
 } __attribute__((packed));
 
 /** @struct pldm_get_commands_req
@@ -361,12 +355,21 @@ int encode_get_version_req(uint8_t instance_id, uint32_t transfer_handle,
  *  @param[out] completion_code - Pointer to response msg's PLDM completion code
  *  @param[out] next_transfer_handle - the next handle for the next part of data
  *  @param[out] transfer_flag - flag to indicate the part of data
+ *  @param[out] version - variable field structure in which ptr will be pointing
+ *    to version data and length will contain size of version data in bytes.
+ *    length will include last 4 bytes crc field also.
  *  @return pldm_completion_codes
+ *  @note data pointed by version->ptr will be a portion of msg and need not
+ *   be freed
+ *  @note crc integrity check is not handled here and should be handled
+ *  by caller
  */
-int decode_get_version_resp(const struct pldm_msg *msg, size_t payload_length,
+int decode_get_version_resp(const struct pldm_msg *msg,
+			    const size_t payload_length,
 			    uint8_t *completion_code,
 			    uint32_t *next_transfer_handle,
-			    uint8_t *transfer_flag, ver32_t *version);
+			    uint8_t *transfer_flag,
+			    struct variable_field *version);
 
 /* GetTID */
 
@@ -441,17 +444,20 @@ int encode_get_commands_resp(uint8_t instance_id, uint8_t completion_code,
  *  @param[in] next_transfer_handle - Handle to identify next portion of
  *              data transfer
  *  @param[in] transfer_flag - Represents the part of transfer
- *  @param[in] version_data - the version data
- *  @param[in] version_size - size of version data
+ *  @param[in] version_data - the version data. last 4 bytes
+ *      will be crc32 of versions also including previously transfered
+ *      versions if it was a multipart response
  *  @param[in,out] msg - Message will be written to this
  *  @return pldm_completion_codes
  *  @note  Caller is responsible for memory alloc and dealloc of param
  *         'msg.payload'
  */
-int encode_get_version_resp(uint8_t instance_id, uint8_t completion_code,
-			    uint32_t next_transfer_handle,
-			    uint8_t transfer_flag, const ver32_t *version_data,
-			    size_t version_size, struct pldm_msg *msg);
+int encode_get_version_resp(const uint8_t instance_id,
+			    const uint8_t completion_code,
+			    const uint32_t next_transfer_handle,
+			    const uint8_t transfer_flag,
+			    const struct variable_field *version_data,
+			    struct pldm_msg *msg);
 
 /** @brief Decode a GetPLDMVersion request message
  *
@@ -462,51 +468,12 @@ int encode_get_version_resp(uint8_t instance_id, uint8_t completion_code,
  *  @param[out] type - PLDM type for which version is requested
  *  @return pldm_completion_codes
  */
-int decode_get_version_req(const struct pldm_msg *msg, size_t payload_length,
+int decode_get_version_req(const struct pldm_msg *msg,
+			   const size_t payload_length,
 			   uint32_t *transfer_handle, uint8_t *transfer_opflag,
 			   uint8_t *type);
 
 /* Requester */
-
-/* SetTID */
-
-/** @brief Create a PLDM request message for SetTID
- *
- *  @param[in] instance_id - Message's instance id
- *  @param[in] tid - Terminus id
- *  @param[in,out] msg - Message will be written to this
- *  @return pldm_completion_codes
- *  @note  Caller is responsible for memory alloc and dealloc of param
- *         'msg.payload'
- */
-int encode_set_tid_req(uint8_t instance_id, uint8_t tid, struct pldm_msg *msg);
-
-/** @brief Create a PLDM response message for GetTID
- *
- *  @param[in] instance_id - Message's instance id
- *  @param[in] completion_code - PLDM completion code
- *  @param[in] tid - Terminus ID
- *  @param[in,out] msg - Message will be written to this
- *  @return pldm_completion_codes
- *  @note  Caller is responsible for memory alloc and dealloc of param
- *         'msg.payload'
- */
- 
- /** @brief Decode a SetTID response message
- *
- *  Note:
- *  * If the return value is not PLDM_SUCCESS, it represents a
- * transport layer error.
- *  * If the completion_code value is not PLDM_SUCCESS, it represents a
- * protocol layer error and all the out-parameters are invalid.
- *
- *  @param[in] msg - Response message
- *  @param[in] payload_length - Length of response message payload
- *  @param[out] completion_code - Pointer to response msg's PLDM completion code
- *  @return pldm_completion_codes
- */
-int decode_set_tid_resp(const struct pldm_msg *msg, size_t payload_length,
-			uint8_t *completion_code);
 
 /* GetTID */
 
@@ -624,6 +591,19 @@ inline int decode_set_tid_resp(const struct pldm_msg *msg,
 int encode_header_only_request(const uint8_t instance_id,
 			       const uint8_t pldm_type, const uint8_t command,
 			       struct pldm_msg *msg);
+
+/** @brief Create a PLDM request message contains empty payload
+ *
+ *	@param[in] instance_id - Message's instance id
+ *	@param[in] pldm_type - PLDM Type
+ *	@param[in] command - PLDM Command
+ *	@param[in] msg_type - PLDM message type
+ *	@param[out] msg - Message will be written to this
+ *	@return pldm_completion_codes
+ */
+int encode_pldm_header(const uint8_t instance_id, const uint8_t pldm_type,
+		       const uint8_t command, const uint8_t msg_type,
+		       struct pldm_msg *msg);
 
 #ifdef __cplusplus
 }

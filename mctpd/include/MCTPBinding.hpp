@@ -102,6 +102,56 @@ using ConfigurationVariant =
 
 extern std::shared_ptr<sdbusplus::asio::connection> conn;
 
+class MctpTransmissionQueue
+{
+  public:
+    struct Message
+    {
+        Message(size_t index_, std::vector<uint8_t>&& payload_,
+                std::vector<uint8_t>&& privateData_,
+                boost::asio::io_context& ioc);
+
+        size_t index{0};
+        std::optional<uint8_t> tag;
+        std::vector<uint8_t> payload{};
+        std::vector<uint8_t> privateData{};
+        boost::asio::steady_timer timer;
+        std::optional<std::vector<uint8_t>> response{};
+    };
+
+    std::shared_ptr<Message> transmit(struct mctp* mctp, mctp_eid_t destEid,
+                                      std::vector<uint8_t>&& payload,
+                                      std::vector<uint8_t>&& privateData,
+                                      boost::asio::io_context& ioc);
+
+    bool receive(struct mctp* mctp, mctp_eid_t srcEid, uint8_t msgTag,
+                 std::vector<uint8_t>&& response, boost::asio::io_context& ioc);
+
+    void dispose(mctp_eid_t destEid, const std::shared_ptr<Message>& message);
+
+  private:
+    struct Tags
+    {
+        std::optional<uint8_t> next() const;
+        void emplace(uint8_t flag);
+        void erase(uint8_t flag);
+
+        uint8_t bits{0xff};
+    };
+
+    struct Endpoint
+    {
+        Tags availableTags;
+        std::map<uint8_t, std::shared_ptr<Message>> transmittedMessages{};
+        std::map<size_t, std::shared_ptr<Message>> queuedMessages{};
+
+        size_t msgCounter{0u};
+        void transmitQueuedMessages(struct mctp* mctp, mctp_eid_t destEid);
+    };
+
+    std::map<mctp_eid_t, Endpoint> endpoints{};
+};
+
 class MctpBinding
 {
   public:
@@ -110,7 +160,7 @@ class MctpBinding
                 boost::asio::io_context& ioc);
     MctpBinding() = delete;
     virtual ~MctpBinding();
-    virtual void initializeBinding(ConfigurationVariant& conf) = 0;
+    virtual void initializeBinding() = 0;
     void initializeEidPool(const std::set<mctp_eid_t>& eidPool);
 
     void handleCtrlReq(uint8_t destEid, void* bindingPrivate, const void* req,
@@ -121,13 +171,18 @@ class MctpBinding
     uint8_t ctrlTxRetryCount;
     boost::asio::io_context& io;
     mctp_server::BindingModeTypes bindingModeType{};
+    mctp_server::MctpPhysicalMediumIdentifiers bindingMediumID{};
+    std::shared_ptr<dbus_interface> mctpInterface;
     struct mctp* mctp = nullptr;
     uint8_t ownEid;
     uint8_t busOwnerEid;
+    MctpTransmissionQueue transmissionQueue;
 
     void initializeMctp();
-    virtual bool getBindingPrivateData(uint8_t dstEid,
-                                       std::vector<uint8_t>& pvtData);
+    void initializeLogging(void);
+    virtual std::optional<std::vector<uint8_t>>
+        getBindingPrivateData(uint8_t dstEid);
+    virtual bool isReceivedPrivateDataCorrect(const void* bindingPrivate);
     virtual bool handlePrepareForEndpointDiscovery(
         mctp_eid_t destEid, void* bindingPrivate, std::vector<uint8_t>& request,
         std::vector<uint8_t>& response);
@@ -149,6 +204,10 @@ class MctpBinding
                                          void* bindingPrivate,
                                          std::vector<uint8_t>& request,
                                          std::vector<uint8_t>& response);
+    virtual bool handleGetVdmSupport(mctp_eid_t endpointEid,
+                                     void* bindingPrivate,
+                                     std::vector<uint8_t>& request,
+                                     std::vector<uint8_t>& response);
     bool getEidCtrlCmd(boost::asio::yield_context& yield,
                        const std::vector<uint8_t>& bindingPrivate,
                        const mctp_eid_t destEid, std::vector<uint8_t>& resp);
@@ -179,7 +238,7 @@ class MctpBinding
     std::optional<mctp_eid_t>
         registerEndpoint(boost::asio::yield_context& yield,
                          const std::vector<uint8_t>& bindingPrivate,
-                         bool isBusOwner, mctp_eid_t eid = 0xFF,
+                         mctp_eid_t eid = 0xFF,
                          mctp_server::BindingModeTypes bindingMode =
                              mctp_server::BindingModeTypes::Endpoint);
     void unregisterEndpoint(mctp_eid_t eid);
@@ -203,14 +262,14 @@ class MctpBinding
             throw std::invalid_argument(name);
         }
     }
+    bool setMediumId(uint8_t value,
+                     mctp_server::MctpPhysicalMediumIdentifiers& mediumId);
 
   private:
     bool staticEid;
     std::vector<uint8_t> uuid;
     mctp_server::BindingTypes bindingID{};
-    mctp_server::MctpPhysicalMediumIdentifiers bindingMediumID{};
     std::shared_ptr<object_server>& objectServer;
-    std::shared_ptr<dbus_interface> mctpInterface;
     std::vector<std::shared_ptr<dbus_interface>> endpointInterface;
     std::vector<std::shared_ptr<dbus_interface>> msgTypeInterface;
     std::vector<std::shared_ptr<dbus_interface>> uuidInterface;
