@@ -464,17 +464,16 @@ void SMBusBinding::initEndpointDiscovery()
             auto const ptr = reinterpret_cast<uint8_t*>(&smbusBindingPvt);
             std::vector<uint8_t> bindingPvtVect(ptr,
                                                 ptr + sizeof(smbusBindingPvt));
+            mctp_eid_t eid = 0xFF;
+            if( smbusBindingPvt.slave_addr == 0xE2)//This is a PLDM I2C Slave device on NCT6681 and NCT6692
+                eid = 0x08;
 
-            auto rc = registerEndpoint(yield, bindingPvtVect);
+            auto rc = registerEndpoint(yield, bindingPvtVect, eid);
             if (rc)
             {
+                fprintf(stderr,"push EID:%d slave_addr:%X in smbusDeviceTable\n", rc.value(), smbusBindingPvt.slave_addr);
                 smbusDeviceTable.push_back(
                     std::make_pair(rc.value(), smbusBindingPvt));
-            }
-            else if( smbusBindingPvt.slave_addr == 0xE2)//This is a PLDM I2C Slave device on NCT6681
-            {
-                smbusDeviceTable.push_back(
-                    std::make_pair(0x08, smbusBindingPvt));
             }
         }
     });
