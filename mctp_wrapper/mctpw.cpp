@@ -363,10 +363,10 @@ static int receive_cb(sd_bus_message* m, void* userdata,
         {
             return 0;
         }
-        uint8_t messageType;
-        uint8_t srcEid;
-        uint8_t msgTag;
-        bool tagOwner;
+        uint8_t messageType = 0;
+        uint8_t srcEid = 0;
+        uint8_t msgTag = 0;
+        bool tagOwner = false;
         std::vector<uint8_t> payload;
 
         message.read(messageType, srcEid, msgTag, tagOwner, payload);
@@ -416,13 +416,14 @@ int mctpw_register_client(void* mctpw_bus_handle, mctpw_message_type_t type,
                           mctpw_receive_message_callback_t rx_cb,
                           void** client_context)
 {
-    clientContext* ctx = new clientContext;
-    UNUSED(receive_requests);
-
     if (!mctpw_bus_handle)
     {
         return -EINVAL;
     }
+
+    auto ctx = std::make_unique<clientContext>();
+    UNUSED(receive_requests);
+
     if (!ctx)
     {
         return -ENOMEM;
@@ -446,17 +447,17 @@ int mctpw_register_client(void* mctpw_bus_handle, mctpw_message_type_t type,
         {
             ctx->matchers.push_back(register_signal_handler(
                 static_cast<sdbusplus::bus::bus&>(*ctx->connection),
-                network_reconfiguration_cb, static_cast<void*>(ctx),
+                network_reconfiguration_cb, static_cast<void*>(ctx.get()),
                 "org.freedesktop.DBus.Properties", "PropertiesChanged",
                 ctx->service_h->second, ""));
             ctx->matchers.push_back(register_signal_handler(
                 static_cast<sdbusplus::bus::bus&>(*ctx->connection),
-                network_reconfiguration_cb, static_cast<void*>(ctx),
+                network_reconfiguration_cb, static_cast<void*>(ctx.get()),
                 "org.freedesktop.DBus.ObjectManager", "InterfacesAdded",
                 ctx->service_h->second, ""));
             ctx->matchers.push_back(register_signal_handler(
                 static_cast<sdbusplus::bus::bus&>(*ctx->connection),
-                network_reconfiguration_cb, static_cast<void*>(ctx),
+                network_reconfiguration_cb, static_cast<void*>(ctx.get()),
                 "org.freedesktop.DBus.ObjectManager", "InterfacesRemoved",
                 ctx->service_h->second, ""));
         }
@@ -464,24 +465,22 @@ int mctpw_register_client(void* mctpw_bus_handle, mctpw_message_type_t type,
         {
             ctx->matchers.push_back(register_signal_handler(
                 static_cast<sdbusplus::bus::bus&>(*ctx->connection), receive_cb,
-                static_cast<void*>(ctx), "xyz.openbmc_project.MCTP.Base",
+                static_cast<void*>(ctx.get()), "xyz.openbmc_project.MCTP.Base",
                 "MessageReceivedSignal", ctx->service_h->second, ""));
         }
     }
     catch (std::exception& e)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(e.what());
-        delete ctx;
         *client_context = nullptr;
         return -EINVAL;
     }
     catch (...)
     {
-        delete ctx;
         *client_context = nullptr;
         return -EINVAL;
     }
-    *client_context = static_cast<void*>(ctx);
+    *client_context = static_cast<void*>(ctx.release());
     return 0;
 }
 
@@ -498,9 +497,9 @@ void mctpw_process(void* client_context)
     return;
 }
 
-int mctpw_process_one(void* client_context)
+ssize_t mctpw_process_one(void* client_context)
 {
-    int ret;
+    ssize_t ret;
 
     if (!client_context)
     {
@@ -762,7 +761,7 @@ static void do_send_message_payload(boost::asio::yield_context yield,
                                     clientContext* ctx, const void* user_ctx,
                                     mctpw_eid_t dst_eid, bool tag_owner,
                                     uint8_t tag, uint8_t* payload,
-                                    unsigned payload_length,
+                                    size_t payload_length,
                                     async_operation_status_cb cb)
 {
     boost::system::error_code ec;
@@ -778,7 +777,7 @@ static void do_send_message_payload(boost::asio::yield_context yield,
         payload_vector.push_back(
             static_cast<uint8_t>(ctx->vendor_message_type >> 8));
 
-        for (unsigned n = 0; n < payload_length; n++)
+        for (size_t n = 0; n < payload_length; n++)
         {
             payload_vector.push_back(payload[n]);
         }
@@ -808,7 +807,7 @@ static void do_send_message_payload(boost::asio::yield_context yield,
 
 int mctpw_async_send_message(void* client_context, mctpw_eid_t dst_eid,
                              bool tag_owner, uint8_t tag, uint8_t* payload,
-                             unsigned payload_length, const void* user_ctx,
+                             size_t payload_length, const void* user_ctx,
                              async_operation_status_cb cb)
 {
     if (!client_context || !payload || !cb)
@@ -849,7 +848,7 @@ int mctpw_async_send_message(void* client_context, mctpw_eid_t dst_eid,
 
 int mctpw_send_message(void* client_context, mctpw_eid_t dst_eid,
                        bool tag_owner, uint8_t tag, uint8_t* payload,
-                       unsigned payload_length)
+                       size_t payload_length)
 {
     if (!client_context || !payload)
     {
@@ -863,7 +862,7 @@ int mctpw_send_message(void* client_context, mctpw_eid_t dst_eid,
     try
     {
         clientContext* ctx = static_cast<clientContext*>(client_context);
-        int response;
+        int response = -1;
         std::vector<uint8_t> payload_vector;
 
         payload_vector.push_back(static_cast<uint8_t>(ctx->type));
@@ -874,7 +873,7 @@ int mctpw_send_message(void* client_context, mctpw_eid_t dst_eid,
         payload_vector.push_back(
             static_cast<uint8_t>(ctx->vendor_message_type >> 8));
 
-        for (unsigned n = 0; n < payload_length; n++)
+        for (size_t n = 0; n < payload_length; n++)
         {
             payload_vector.push_back(payload[n]);
         }
@@ -901,7 +900,7 @@ int mctpw_send_message(void* client_context, mctpw_eid_t dst_eid,
 
 static void do_send_receive_atomic_message(
     boost::asio::yield_context yield, clientContext* ctx, const void* user_ctx,
-    mctpw_eid_t dst_eid, uint8_t* payload, unsigned payload_length,
+    mctpw_eid_t dst_eid, uint8_t* payload, size_t payload_length,
     unsigned timeout, send_receive_atomic_cb cb)
 {
     boost::system::error_code ec;
@@ -917,7 +916,7 @@ static void do_send_receive_atomic_message(
         payload_vector.push_back(
             static_cast<uint8_t>(ctx->vendor_message_type >> 8));
 
-        for (unsigned n = 0; n < payload_length; n++)
+        for (size_t n = 0; n < payload_length; n++)
             payload_vector.push_back(payload[n]);
 
         response_vector =
@@ -989,7 +988,7 @@ int mctpw_send_receive_atomic_message(void* client_context, mctpw_eid_t dst_eid,
                                       uint8_t* request_payload,
                                       unsigned request_payload_length,
                                       uint8_t* response_payload,
-                                      unsigned* response_payload_length,
+                                      size_t* response_payload_length,
                                       unsigned timeout)
 {
     if (!client_context || !request_payload || !response_payload ||
@@ -1026,7 +1025,7 @@ int mctpw_send_receive_atomic_message(void* client_context, mctpw_eid_t dst_eid,
 
         if (response_vector.size() && *response_payload_length)
         {
-            unsigned n = 0;
+            size_t n = 0;
             for (auto& i : response_vector)
             {
                 response_payload[n++] = i;

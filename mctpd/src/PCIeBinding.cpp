@@ -5,18 +5,22 @@
 using variant = std::variant<uint8_t, uint16_t, bool, std::string>;
 
 PCIeBinding::PCIeBinding(std::shared_ptr<object_server>& objServer,
-                         std::string& objPath, ConfigurationVariant& conf,
-                         boost::asio::io_context& ioc) :
-    MctpBinding(objServer, objPath, conf, ioc),
-    streamMonitor(ioc), ueventMonitor(ioc),
-    getRoutingInterval(std::get<PcieConfiguration>(conf).getRoutingInterval),
+                         const std::string& objPath,
+                         const PcieConfiguration& conf,
+                         boost::asio::io_context& ioc,
+                         std::shared_ptr<hw::PCIeDriver>&& hwParam,
+                         std::shared_ptr<hw::DeviceMonitor>&& hwMonitorParam) :
+    MctpBinding(objServer, objPath, conf, ioc,
+                mctp_server::BindingTypes::MctpOverPcieVdm),
+    hw{std::move(hwParam)}, hwMonitor{std::move(hwMonitorParam)},
+    getRoutingInterval(conf.getRoutingInterval),
     getRoutingTableTimer(ioc, getRoutingInterval)
 {
     pcieInterface = objServer->add_interface(objPath, pcie_binding::interface);
 
     try
     {
-        bdf = std::get<PcieConfiguration>(conf).bdf;
+        bdf = conf.bdf;
 
         if (bindingModeType == mctp_server::BindingModeTypes::BusOwner)
             discoveredFlag = pcie_binding::DiscoveryFlags::NotApplicable;
@@ -49,7 +53,7 @@ PCIeBinding::PCIeBinding(std::shared_ptr<object_server>& objServer,
     }
 }
 
-bool PCIeBinding::endpointDiscoveryFlow()
+void PCIeBinding::endpointDiscoveryFlow()
 {
     struct mctp_nupcie_pkt_private pktPrv;
     pktPrv.routing = PCIE_ROUTE_TO_RC;
@@ -62,13 +66,10 @@ bool PCIeBinding::endpointDiscoveryFlow()
     boost::asio::spawn(io, [prvData, this](boost::asio::yield_context yield) {
         if (!discoveryNotifyCtrlCmd(yield, prvData, MCTP_EID_NULL))
         {
-            phosphor::logging::log<phosphor::logging::level::INFO>(
+            phosphor::logging::log<phosphor::logging::level::ERR>(
                 "Discovery Notify failed");
-            return false;
         }
-        return true;
     });
-    return false;
 }
 
 mctp_server::BindingModeTypes
@@ -99,7 +100,7 @@ void PCIeBinding::updateRoutingTable()
 
     if (discoveredFlag != pcie_binding::DiscoveryFlags::Discovered)
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Get Routing Table failed, undiscovered");
         return;
     }
@@ -113,8 +114,9 @@ void PCIeBinding::updateRoutingTable()
         std::vector<uint8_t> getRoutingTableEntryResp = {};
         std::vector<routingTableEntry_t> routingTableTmp;
         uint8_t entryHandle = 0x00;
+        uint8_t responseCount = 0;
 
-        while (entryHandle != 0xff)
+        while (entryHandle != 0xff && responseCount < 0xff)
         {
             if (!getRoutingTableCtrlCmd(yield, prvData, MCTP_EID_NULL,
                                         entryHandle, getRoutingTableEntryResp))
@@ -157,10 +159,18 @@ void PCIeBinding::updateRoutingTable()
                 entryOffset += routingTableEntry->phys_address_size;
             }
             entryHandle = routingTableHdr->next_entry_handle;
+            responseCount++;
         }
 
         if (routingTableTmp != routingTable)
         {
+	    //nu todo
+            //if (!setDriverEndpointMap(routingTableTmp))
+            //{
+            //    phosphor::logging::log<phosphor::logging::level::ERR>(
+            //        "Failed to store routing table in KMD");
+            //}
+
             processRoutingTableChanges(routingTableTmp, yield, prvData);
             routingTable = routingTableTmp;
         }
@@ -210,7 +220,21 @@ void PCIeBinding::processRoutingTableChanges(
         }
     }
 }
+//nu todo
+#if 0
+bool PCIeBinding::setDriverEndpointMap(
+    const std::vector<routingTableEntry_t>& newTable)
+{
+    std::vector<hw::EidInfo> endpoints;
 
+    for (const auto& [eid, busDevFunc, type] : newTable)
+    {
+        endpoints.push_back({eid, busDevFunc});
+    }
+
+    return hw->setEndpointMap(endpoints);
+}
+#endif
 bool PCIeBinding::isReceivedPrivateDataCorrect(const void* bindingPrivate)
 {
     auto pciePrivate =
@@ -396,44 +420,21 @@ bool PCIeBinding::handleGetVdmSupport(mctp_eid_t destEid, void* bindingPrivate,
     }
     else
     {
-        resp->vendor_id_set_selector = setIndex + 1;
+        resp->vendor_id_set_selector = static_cast<uint8_t>(setIndex + 1U);
     }
-    resp->vendor_id_format = vdmSetDatabase[setIndex].idFormat;
-    resp->vendor_id_data = vdmSetDatabase[setIndex].idData;
+    resp->vendor_id_format = vdmSetDatabase[setIndex].vendorIdFormat;
+    resp->vendor_id_data = vdmSetDatabase[setIndex].vendorId;
     resp->command_set_type = vdmSetDatabase[setIndex].commandSetType;
 
     return true;
-}
-
-void PCIeBinding::readResponse()
-{
-    streamMonitor.async_wait(
-        boost::asio::posix::stream_descriptor::wait_read,
-        [this](const boost::system::error_code& ec) {
-            if (ec)
-            {
-                phosphor::logging::log<phosphor::logging::level::ERR>(
-                    "Error reading PCIe response");
-                readResponse();
-            }
-            mctp_nupcie_rx(pcie);
-            readResponse();
-        });
 }
 
 void PCIeBinding::initializeBinding()
 {
     int status = 0;
     initializeMctp();
-    pcie = mctp_nupcie_init();
-    if (pcie == nullptr)
-    {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Error in MCTP PCIe init");
-        throw std::system_error(
-            std::make_error_code(std::errc::not_enough_memory));
-    }
-    struct mctp_binding* binding = mctp_nupcie_core(pcie);
+    hw->init();
+    mctp_binding* binding = hw->binding();
     if (binding == nullptr)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
@@ -449,46 +450,41 @@ void PCIeBinding::initializeBinding()
         throw std::system_error(
             std::make_error_code(static_cast<std::errc>(-status)));
     }
+    //nu todo
+    if (hw->registerAsDefault() == false)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Registration as default control service failed");
+        throw std::system_error(
+            std::make_error_code(std::errc::operation_not_permitted));
+    }
+
     mctp_set_rx_all(mctp, &MctpBinding::rxMessage,
                     static_cast<MctpBinding*>(this));
     mctp_set_rx_ctrl(mctp, &MctpBinding::handleMCTPControlRequests,
                      static_cast<MctpBinding*>(this));
     mctp_binding_set_tx_enabled(binding, true);
 
-    int driverFd = mctp_nupcie_get_fd(pcie);
-    if (driverFd < 0)
-    {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Error opening driver file");
-        throw std::system_error(
-            std::make_error_code(std::errc::not_enough_memory));
-    }
-    streamMonitor.assign(driverFd);
-
-    if (initializeUdev() == false)
+    if (hwMonitor->initialize() == false)
     {
         throw std::system_error(
             std::make_error_code(std::errc::function_not_supported));
     }
 
-    readResponse();
+    hw->pollRx();
+
     if (bindingModeType == mctp_server::BindingModeTypes::Endpoint)
     {
-        boost::asio::post(io, [this]() {
-            if (!endpointDiscoveryFlow())
-            {
-                phosphor::logging::log<phosphor::logging::level::ERR>(
-                    "Send Discovery Notify Error");
-            }
-        });
+        endpointDiscoveryFlow();
     }
 #if 0
-    if (mctp_nupcie_get_bdf(pcie, &bdf) == 0)
+
+    if (hw->getBdf(bdf))
     {
         pcieInterface->set_property("BDF", bdf);
     }
 
-    if (setMediumId(mctp_nupcie_get_medium_id(pcie), bindingMediumID))
+    if (setMediumId(hw->getMediumId(), bindingMediumID))
     {
         mctpInterface->set_property(
             "BindingMediumID",
@@ -501,113 +497,28 @@ void PCIeBinding::initializeBinding()
             "Incorrect medium id, BindingMediumID property not updated");
     }
 #endif
-    monitorUdevEvents();
+
+    hwMonitor->observe(weak_from_this());
 }
 
-bool PCIeBinding::initializeUdev()
+void PCIeBinding::deviceReadyNotify(bool ready)
 {
-    try
-    {
-        udevContext = udev_new();
-        if (!udevContext)
-        {
-            throw std::system_error(
-                std::make_error_code(std::errc::function_not_supported));
-        }
-        udevice = udev_device_new_from_syspath(udevContext, astUdevPath);
-        if (!udevice)
-        {
-            throw std::system_error(
-                std::make_error_code(std::errc::function_not_supported));
-        }
-        umonitor = udev_monitor_new_from_netlink(udevContext, "udev");
-        if (!umonitor)
-        {
-            throw std::system_error(
-                std::make_error_code(std::errc::function_not_supported));
-        }
-        /* TODO: Uncomment when event subsytem fix in KMD will be ready */
-        // udev_monitor_filter_add_match_subsystem_devtype(umonitor, "misc",
-        // NULL);
-        udev_monitor_enable_receiving(umonitor);
-        ueventMonitor.assign(udev_monitor_get_fd(umonitor));
-        return true;
-    }
-    catch (std::exception& e)
-    {
-        if (udevice)
-        {
-            udev_device_unref(udevice);
-            udevice = nullptr;
-        }
-        if (udevContext)
-        {
-            udev_unref(udevContext);
-            udevContext = nullptr;
-        }
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Udev initialization failed",
-            phosphor::logging::entry("Exception:", e.what()));
-    }
-    return false;
-}
-
-void PCIeBinding::monitorUdevEvents()
-{
-    ueventMonitor.async_wait(
-        boost::asio::posix::stream_descriptor::wait_read,
-        [this](const boost::system::error_code& ec) {
-            if (ec)
-            {
-                if (ec == boost::asio::error::operation_aborted)
-                {
-                    return;
-                }
-
-                phosphor::logging::log<phosphor::logging::level::ERR>(
-                    "Error reading uevents",
-                    phosphor::logging::entry("error:", ec.message().c_str()));
-                monitorUdevEvents();
-                return;
-            }
-
-            udev_device* dev = udev_monitor_receive_device(umonitor);
-            if (dev)
-            {
-                ueventHandlePcieReady(dev);
-                udev_device_unref(dev);
-            }
-            else
-            {
-                phosphor::logging::log<phosphor::logging::level::ERR>(
-                    "Udev monitor get device failed");
-            }
-
-            monitorUdevEvents();
-        });
-}
-
-void PCIeBinding::ueventHandlePcieReady(udev_device* dev)
-{
-    const char* value = udev_device_get_property_value(dev, "PCIE_READY");
-
-    if (!value)
-    {
-        return;
-    }
 #if 0
-    if (strcmp(value, "1") == 0)
+    if (ready)
     {
-        if (mctp_nupcie_get_bdf(pcie, &bdf) != 0)
+        if (!hw->getBdf(bdf))
         {
             bdf = 0;
-            phosphor::logging::log<phosphor::logging::level::ERR>(
-                "Astpcie get bdf failed");
         }
     }
     else
     {
 #endif
+	//pass build check
+	if(ready)
+	{
+	   bdf = 0;
+	}
         bdf = 0;
         if (bindingModeType != mctp_server::BindingModeTypes::BusOwner)
         {
@@ -647,22 +558,11 @@ void PCIeBinding::changeDiscoveredFlag(pcie_binding::DiscoveryFlags flag)
     discoveredFlag = flag;
     pcieInterface->set_property(
         "DiscoveredFlag", pcie_binding::convertDiscoveryFlagsToString(flag));
-}
 
-PCIeBinding::~PCIeBinding()
-{
-
-    streamMonitor.release();
-
-    if (umonitor)
+    if (pcie_binding::DiscoveryFlags::Discovered == flag)
     {
-        ueventMonitor.release();
-        udev_monitor_unref(umonitor);
-        udev_device_unref(udevice);
-        udev_unref(udevContext);
-    }
-    if (pcie)
-    {
-        mctp_nupcie_free(pcie);
+	//nu todo
+        //mctp_nupcie_free(pcie);
+        getRoutingTableTimer.expires_from_now(boost::posix_time::seconds{0});
     }
 }
