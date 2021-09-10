@@ -6,36 +6,80 @@
 
 #include <iostream>
 
+enum class DiscoveryFlags : uint8_t
+{
+    kNotApplicable = 0,
+    kUnDiscovered,
+    kDiscovered,
+};
+
 class SMBusBinding : public MctpBinding
 {
   public:
     SMBusBinding() = delete;
     SMBusBinding(std::shared_ptr<object_server>& objServer,
-                 std::string& objPath, ConfigurationVariant& conf,
+                 const std::string& objPath, const SMBusConfiguration& conf,
                  boost::asio::io_context& ioc);
-    virtual ~SMBusBinding();
-    virtual void initializeBinding() override;
-    virtual std::optional<std::vector<uint8_t>>
+    ~SMBusBinding() override;
+    void initializeBinding() override;
+    std::optional<std::vector<uint8_t>>
         getBindingPrivateData(uint8_t dstEid) override;
-    virtual bool handleGetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
-                                     std::vector<uint8_t>& request,
-                                     std::vector<uint8_t>& response) override;
+    bool handleGetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
+                             std::vector<uint8_t>& request,
+                             std::vector<uint8_t>& response) override;
+    bool handleSetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
+                             std::vector<uint8_t>& request,
+                             std::vector<uint8_t>& response) override;
+    bool handleGetVersionSupport(mctp_eid_t destEid, void* bindingPrivate,
+                                 std::vector<uint8_t>& request,
+                                 std::vector<uint8_t>& response) override;
+    bool handleGetMsgTypeSupport(mctp_eid_t destEid, void* bindingPrivate,
+                                 std::vector<uint8_t>& request,
+                                 std::vector<uint8_t>& response) override;
+    bool handleGetVdmSupport(mctp_eid_t endpointEid, void* bindingPrivate,
+                             std::vector<uint8_t>& request,
+                             std::vector<uint8_t>& response) override;
+    void addUnknownEIDToDeviceTable(const mctp_eid_t eid,
+                                    void* bindingPrivate) override;
 
   private:
-    void SMBusInit();
+    std::string SMBusInit();
     void readResponse();
-    void initEndpointDiscovery();
+    void initEndpointDiscovery(boost::asio::yield_context& yield);
+    bool reserveBandwidth(const mctp_eid_t eid,
+                          const uint16_t timeout) override;
+    void startTimerAndReleaseBW(const uint16_t interval,
+                                const mctp_smbus_pkt_private* prvt);
+    bool releaseBandwidth(const mctp_eid_t eid) override;
     std::string bus;
     bool arpMasterSupport;
     uint8_t bmcSlaveAddr;
+    std::set<uint8_t> supportedEndpointSlaveAddress;
     struct mctp_binding_smbus* smbus = nullptr;
     int inFd{-1};  // in_fd for the smbus binding
     int outFd{-1}; // out_fd for the root bus
-    std::vector<std::pair<int, int>> muxFds;
+    DiscoveryFlags discoveredFlag;
     boost::asio::posix::stream_descriptor smbusReceiverFd;
+    boost::asio::steady_timer reserveBWTimer;
+    std::shared_ptr<dbus_interface> smbusInterface;
     bool isMuxFd(const int fd);
-    std::vector<std::pair<mctp_eid_t, struct mctp_smbus_extra_params>>
+    std::vector<std::pair<mctp_eid_t, struct mctp_smbus_pkt_private>>
         smbusDeviceTable;
-    void scanAllPorts(void);
-    void scanPort(const int scanFd);
+    boost::asio::steady_timer scanTimer;
+    std::map<int, int> muxPortMap;
+    std::set<std::pair<int, uint8_t>> rootDeviceMap;
+    bool addRootDevices;
+    std::unordered_map<std::string, std::string> muxIdleModeMap{};
+    void scanDevices();
+    std::map<int, int> getMuxFds(const std::string& rootPort);
+    void scanPort(const int scanFd,
+                  std::set<std::pair<int, uint8_t>>& deviceMap);
+    void scanMuxBus(std::set<std::pair<int, uint8_t>>& deviceMap);
+    mctp_eid_t
+        getEIDFromDeviceTable(const std::vector<uint8_t>& bindingPrivate);
+    void removeDeviceTableEntry(const mctp_eid_t eid);
+    void updateDiscoveredFlag(DiscoveryFlags flag);
+    std::string convertToString(DiscoveryFlags flag);
+    void restoreMuxIdleMode();
+    void setMuxIdleModeToDisconnect();
 };

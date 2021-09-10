@@ -1,54 +1,50 @@
 #pragma once
 
+#include "utils/Configuration.hpp"
+#include "utils/types.hpp"
+
 #include <libmctp-cmds.h>
 #include <libmctp.h>
 
 #include <boost/asio/steady_timer.hpp>
 #include <iostream>
-#include <sdbusplus/asio/object_server.hpp>
-#include <xyz/openbmc_project/MCTP/Base/server.hpp>
-#include <xyz/openbmc_project/MCTP/Endpoint/server.hpp>
-#include <xyz/openbmc_project/MCTP/SupportedMessageTypes/server.hpp>
-
-#ifdef USE_MOCK
-#include "../tests/mocks/objectServerMock.hpp"
-using object_server = mctpd_mock::object_server_mock;
-using dbus_interface = mctpd_mock::dbus_interface_mock;
-#else
-using object_server = sdbusplus::asio::object_server;
-using dbus_interface = sdbusplus::asio::dbus_interface;
-#endif
-
-using mctp_server = sdbusplus::xyz::openbmc_project::MCTP::server::Base;
-using mctp_endpoint = sdbusplus::xyz::openbmc_project::MCTP::server::Endpoint;
-using mctp_msg_types =
-    sdbusplus::xyz::openbmc_project::MCTP::server::SupportedMessageTypes;
+#include <numeric>
+#include <unordered_set>
 
 class SMBusBinding;
 class PCIeBinding;
 
-struct SMBusConfiguration
-{
-    mctp_server::MctpPhysicalMediumIdentifiers mediumId;
-    mctp_server::BindingModeTypes mode;
-    uint8_t defaultEid;
-    std::set<uint8_t> eidPool;
-    std::string bus;
-    bool arpMasterSupport;
-    uint8_t bmcSlaveAddr;
-    unsigned int reqToRespTime;
-    uint8_t reqRetryCount;
-};
+constexpr uint8_t vendorIdNoMoreSets = 0xff;
 
-struct PcieConfiguration
+using endpointInterfaceMap =
+    std::unordered_map<mctp_eid_t, std::shared_ptr<dbus_interface>>;
+using BindingPrivateVect = std::vector<uint8_t>;
+
+namespace std
 {
-    mctp_server::MctpPhysicalMediumIdentifiers mediumId;
-    mctp_server::BindingModeTypes mode;
-    uint8_t defaultEid;
-    uint16_t bdf;
-    unsigned int reqToRespTime;
-    uint8_t reqRetryCount;
-    uint8_t getRoutingInterval;
+template <>
+struct hash<BindingPrivateVect>
+{
+    size_t operator()(const BindingPrivateVect& bindingPrivate) const
+    {
+        size_t init = 0;
+        return std::accumulate(std::begin(bindingPrivate),
+                               std::end(bindingPrivate), init,
+                               [](size_t prevHash, uint8_t byte) {
+                                   return prevHash ^ std::hash<uint8_t>{}(byte);
+                               });
+    }
+};
+} // namespace std
+
+enum MctpStatus
+{
+    mctpErrorOperationNotAllowed = -5,
+    mctpErrorReleaseBWFailed = -4,
+    mctpErrorRsvBWIsNotActive = -3,
+    mctpErrorRsvBWFailed = -2,
+    mctpInternalError = -1,
+    mctpSuccess = 0
 };
 
 struct MsgTypes
@@ -70,6 +66,9 @@ struct EndpointProperties
     mctp_server::BindingModeTypes mode;
     uint16_t networkId;
     MsgTypes endpointMsgTypes;
+    // Vendor PCI ID Support
+    std::vector<uint16_t> vendorIdCapabilitySets;
+    std::string vendorIdFormat;
 };
 
 struct MsgTypeSupportCtrlResp
@@ -88,6 +87,17 @@ struct MctpVersionSupportCtrlResp
     std::vector<std::vector<uint8_t>> verNoEntry;
 };
 
+// VendorPCI ID Support Structure
+struct MctpVendIdMsgSupportResp
+{
+    mctp_ctrl_msg_hdr ctrlMsgHeader;
+    uint8_t completionCode;
+    uint8_t vendorIdSet;
+    uint8_t vendorIdFormat;
+    uint16_t vendorIdFormatData;
+    uint16_t vendorIdSetCmdType;
+};
+
 enum class PacketState : uint8_t
 {
     invalidPacket,
@@ -97,8 +107,26 @@ enum class PacketState : uint8_t
     noResponse
 };
 
-using ConfigurationVariant =
-    std::variant<SMBusConfiguration, PcieConfiguration>;
+struct InternalVdmSetDatabase
+{
+    uint8_t vendorIdFormat;
+    uint16_t vendorId;
+    uint16_t commandSetType;
+};
+
+struct DeviceWatcher
+{
+  public:
+    void deviceDiscoveryInit();
+    bool isDeviceGoodForInit(const BindingPrivateVect& bindingPvt);
+    bool checkDeviceInitThreshold(const BindingPrivateVect& bindingPvt);
+
+  private:
+    std::unordered_set<BindingPrivateVect> ignoreList;
+    std::unordered_set<BindingPrivateVect> previousInitList;
+    std::unordered_set<BindingPrivateVect> currentInitList;
+    std::unordered_map<BindingPrivateVect, int> successiveInitCount;
+};
 
 extern std::shared_ptr<sdbusplus::asio::connection> conn;
 
@@ -156,8 +184,9 @@ class MctpBinding
 {
   public:
     MctpBinding(std::shared_ptr<object_server>& objServer,
-                const std::string& objPath, ConfigurationVariant& conf,
-                boost::asio::io_context& ioc);
+                const std::string& objPath, const Configuration& conf,
+                boost::asio::io_context& ioc,
+                const mctp_server::BindingTypes bindingType);
     MctpBinding() = delete;
     virtual ~MctpBinding();
     virtual void initializeBinding() = 0;
@@ -176,7 +205,16 @@ class MctpBinding
     struct mctp* mctp = nullptr;
     uint8_t ownEid;
     uint8_t busOwnerEid;
+    bool rsvBWActive = false;
+    mctp_eid_t reservedEID = 0;
     MctpTransmissionQueue transmissionQueue;
+    DeviceWatcher deviceWatcher{};
+
+    std::unordered_map<uint8_t, version_entry>
+        versionNumbersForUpperLayerResponder;
+
+    // vendor PCI Msg Interface
+    endpointInterfaceMap vendorIdInterface;
 
     void initializeMctp();
     void initializeLogging(void);
@@ -186,6 +224,8 @@ class MctpBinding
     virtual bool handlePrepareForEndpointDiscovery(
         mctp_eid_t destEid, void* bindingPrivate, std::vector<uint8_t>& request,
         std::vector<uint8_t>& response);
+    virtual bool reserveBandwidth(const mctp_eid_t eid, const uint16_t timeout);
+    virtual bool releaseBandwidth(const mctp_eid_t eid);
     virtual bool handleEndpointDiscovery(mctp_eid_t destEid,
                                          void* bindingPrivate,
                                          std::vector<uint8_t>& request,
@@ -208,6 +248,8 @@ class MctpBinding
                                      void* bindingPrivate,
                                      std::vector<uint8_t>& request,
                                      std::vector<uint8_t>& response);
+    virtual void addUnknownEIDToDeviceTable(const mctp_eid_t eid,
+                                            void* bindingPrivate);
     bool getEidCtrlCmd(boost::asio::yield_context& yield,
                        const std::vector<uint8_t>& bindingPrivate,
                        const mctp_eid_t destEid, std::vector<uint8_t>& resp);
@@ -228,6 +270,19 @@ class MctpBinding
         const std::vector<uint8_t>& bindingPrivate, const mctp_eid_t destEid,
         uint8_t msgTypeNo,
         MctpVersionSupportCtrlResp* mctpVersionSupportCtrlResp);
+
+    bool registerUpperLayerResponder(uint8_t typeNo,
+                                     std::vector<uint8_t>& list);
+    bool manageVersionInfo(uint8_t typeNo, std::vector<uint8_t>& list);
+
+    // vendor PCI ID Function
+    bool getPCIVDMessageSupportCtrlCmd(
+        boost::asio::yield_context& yield,
+        const std::vector<uint8_t>& bindingPrivate, const mctp_eid_t destEid,
+        std::vector<uint16_t>& vendorSetIdList, std::string& venformat);
+
+    bool manageVdpciVersionInfo(uint16_t vendorId, uint16_t cmdSetType);
+
     bool discoveryNotifyCtrlCmd(boost::asio::yield_context& yield,
                                 const std::vector<uint8_t>& bindingPrivate,
                                 const mctp_eid_t destEid);
@@ -238,7 +293,7 @@ class MctpBinding
     std::optional<mctp_eid_t>
         registerEndpoint(boost::asio::yield_context& yield,
                          const std::vector<uint8_t>& bindingPrivate,
-                         mctp_eid_t eid = 0xFF,
+                         mctp_eid_t eid,
                          mctp_server::BindingModeTypes bindingMode =
                              mctp_server::BindingModeTypes::Endpoint);
     void unregisterEndpoint(mctp_eid_t eid);
@@ -265,18 +320,21 @@ class MctpBinding
     bool setMediumId(uint8_t value,
                      mctp_server::MctpPhysicalMediumIdentifiers& mediumId);
 
+    // Register MCTP responder for upper layer
+    std::vector<InternalVdmSetDatabase> vdmSetDatabase;
+
   private:
     bool staticEid;
     std::vector<uint8_t> uuid;
     mctp_server::BindingTypes bindingID{};
-    std::shared_ptr<object_server>& objectServer;
-    std::vector<std::shared_ptr<dbus_interface>> endpointInterface;
-    std::vector<std::shared_ptr<dbus_interface>> msgTypeInterface;
-    std::vector<std::shared_ptr<dbus_interface>> uuidInterface;
+    std::shared_ptr<object_server> objectServer;
+    endpointInterfaceMap endpointInterface;
+    endpointInterfaceMap msgTypeInterface;
+    endpointInterfaceMap uuidInterface;
+
     boost::asio::steady_timer ctrlTxTimer;
 
-    // map<EID, assigned>
-    std::unordered_map<mctp_eid_t, bool> eidPoolMap;
+    std::vector<std::pair<mctp_eid_t, bool>> eidPool;
     bool ctrlTxTimerExpired = true;
     // <state, retryCount, maxRespDelay, destEid, BindingPrivate, ReqPacket,
     //  Callback>
@@ -285,13 +343,15 @@ class MctpBinding
                    std::vector<uint8_t>, std::vector<uint8_t>,
                    std::function<void(PacketState, std::vector<uint8_t>&)>>>
         ctrlTxQueue;
+    // <eid, uuid>
+    std::vector<std::pair<mctp_eid_t, std::string>> uuidTable;
 
     void createUuid();
     void updateEidStatus(const mctp_eid_t endpointId, const bool assigned);
     mctp_eid_t getAvailableEidFromPool();
-    bool sendMctpMessage(mctp_eid_t destEid, std::vector<uint8_t> req,
-                         bool tagOwner, uint8_t msgTag,
-                         std::vector<uint8_t> bindingPrivate);
+    bool sendMctpCtrlMessage(mctp_eid_t destEid, std::vector<uint8_t> req,
+                             bool tagOwner, uint8_t msgTag,
+                             std::vector<uint8_t> bindingPrivate);
     void processCtrlTxQueue();
     void pushToCtrlTxQueue(
         PacketState pktState, const mctp_eid_t destEid,
@@ -307,14 +367,22 @@ class MctpBinding
     bool getFormattedReq(std::vector<uint8_t>& req, Args&&... reqParam);
     std::optional<mctp_eid_t>
         busOwnerRegisterEndpoint(boost::asio::yield_context& yield,
-                                 const std::vector<uint8_t>& bindingPrivate);
+                                 const std::vector<uint8_t>& bindingPrivate,
+                                 mctp_eid_t eid);
     void registerMsgTypes(std::shared_ptr<dbus_interface>& msgTypeIntf,
                           const MsgTypes& messageType);
-    void populateEndpointProperties(const EndpointProperties& epProperties);
+    bool populateEndpointProperties(const EndpointProperties& epProperties);
+    void
+        getVendorDefinedMessageTypes(boost::asio::yield_context yield,
+                                     const std::vector<uint8_t>& bindingPrivate,
+                                     mctp_eid_t destEid,
+                                     EndpointProperties& epProperties);
     mctp_server::BindingModeTypes getEndpointType(const uint8_t types);
     MsgTypes getMsgTypes(const std::vector<uint8_t>& msgType);
     std::vector<uint8_t> getBindingMsgTypes();
-    void removeInterface(
-        std::string& interfacePath,
-        std::vector<std::shared_ptr<dbus_interface>>& interfaces);
+    bool removeInterface(mctp_eid_t eid, endpointInterfaceMap& interfaces);
+    std::optional<mctp_eid_t> getEIDFromUUID(std::string& uuidStr);
+    void clearRegisteredDevice(const mctp_eid_t eid);
+    bool isEIDMappedToUUID(mctp_eid_t& eid, std::string& destUUID);
+    bool isEIDRegistered(mctp_eid_t eid);
 };

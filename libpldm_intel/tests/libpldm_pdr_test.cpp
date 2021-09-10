@@ -318,18 +318,33 @@ TEST(PDRAccess, testGetNext)
     EXPECT_EQ(pldm_pdr_get_record_count(repo), 4u);
     EXPECT_EQ(pldm_pdr_get_repo_size(repo), sizeof(in2) * 4);
     hdl = pldm_pdr_get_next_record(repo, hdl, &outData, &size, &nextRecHdl);
+    if (outData == nullptr)
+    {
+        pldm_pdr_destroy(repo);
+    }
+    ASSERT_NE(outData, nullptr);
     EXPECT_NE(hdl, nullptr);
     EXPECT_EQ(size, sizeof(in2));
     EXPECT_EQ(nextRecHdl, 3u);
     EXPECT_EQ(memcmp(outData, in2.data(), sizeof(in2)), 0);
     outData = nullptr;
     hdl = pldm_pdr_get_next_record(repo, hdl, &outData, &size, &nextRecHdl);
+    if (outData == nullptr)
+    {
+        pldm_pdr_destroy(repo);
+    }
+    ASSERT_NE(outData, nullptr);
     EXPECT_NE(hdl, nullptr);
     EXPECT_EQ(size, sizeof(in2));
     EXPECT_EQ(nextRecHdl, 4u);
     EXPECT_EQ(memcmp(outData, in2.data(), sizeof(in2)), 0);
     outData = nullptr;
     hdl = pldm_pdr_get_next_record(repo, hdl, &outData, &size, &nextRecHdl);
+    if (outData == nullptr)
+    {
+        pldm_pdr_destroy(repo);
+    }
+    ASSERT_NE(outData, nullptr);
     EXPECT_NE(hdl, nullptr);
     EXPECT_EQ(size, sizeof(in2));
     EXPECT_EQ(nextRecHdl, 0u);
@@ -573,8 +588,12 @@ TEST(EntityAssociationPDR, testBuild)
     size_t num{};
     pldm_entity* out = nullptr;
     pldm_entity_association_tree_visit(tree, &out, &num);
+    if (out == nullptr)
+    {
+        pldm_entity_association_tree_destroy(tree);
+    }
+    ASSERT_NE(out, nullptr);
     EXPECT_EQ(num, 9u);
-
     EXPECT_EQ(out[0].entity_type, 1u);
     EXPECT_EQ(out[0].entity_instance_num, 1u);
     EXPECT_EQ(out[0].entity_container_id, 0u);
@@ -627,6 +646,11 @@ TEST(EntityAssociationPDR, testSpecialTrees)
     pldm_entity* out = nullptr;
     pldm_entity_association_tree_visit(tree, &out, &num);
     EXPECT_EQ(num, 1u);
+    if (out == nullptr)
+    {
+        pldm_entity_association_tree_destroy(tree);
+    }
+    ASSERT_NE(out, nullptr);
     EXPECT_EQ(out[0].entity_type, 1u);
     EXPECT_EQ(out[0].entity_instance_num, 1u);
     EXPECT_EQ(out[0].entity_container_id, 0u);
@@ -646,6 +670,11 @@ TEST(EntityAssociationPDR, testSpecialTrees)
     EXPECT_NE(node, nullptr);
     pldm_entity_association_tree_visit(tree, &out, &num);
     EXPECT_EQ(num, 3u);
+    if (out == nullptr)
+    {
+        pldm_entity_association_tree_destroy(tree);
+    }
+    ASSERT_NE(out, nullptr);
     EXPECT_EQ(out[0].entity_type, 1u);
     EXPECT_EQ(out[0].entity_instance_num, 1u);
     EXPECT_EQ(out[0].entity_container_id, 0u);
@@ -674,6 +703,11 @@ TEST(EntityAssociationPDR, testSpecialTrees)
         tree, &entities[2], node1, PLDM_ENTITY_ASSOCIAION_PHYSICAL);
     EXPECT_NE(node2, nullptr);
     pldm_entity_association_tree_visit(tree, &out, &num);
+    if (out == nullptr)
+    {
+        pldm_entity_association_tree_destroy(tree);
+    }
+    ASSERT_NE(out, nullptr);
     EXPECT_EQ(num, 3u);
     EXPECT_EQ(out[0].entity_type, 1u);
     EXPECT_EQ(out[0].entity_instance_num, 1u);
@@ -705,6 +739,11 @@ TEST(EntityAssociationPDR, testSpecialTrees)
     EXPECT_NE(node2, nullptr);
     pldm_entity_association_tree_visit(tree, &out, &num);
     EXPECT_EQ(num, 4u);
+    if (out == nullptr)
+    {
+        pldm_entity_association_tree_destroy(tree);
+    }
+    ASSERT_NE(out, nullptr);
     EXPECT_EQ(out[0].entity_type, 1u);
     EXPECT_EQ(out[0].entity_instance_num, 1u);
     EXPECT_EQ(out[0].entity_container_id, 0u);
@@ -1239,7 +1278,8 @@ TEST(NumericEffecterPDR, testParse)
     EXPECT_EQ(status, true);
 
     const struct pldm_numeric_effecter_value_pdr* effecter_pdr_out =
-        (const struct pldm_numeric_effecter_value_pdr*)pdr.data();
+        (const struct pldm_numeric_effecter_value_pdr*)
+            numeric_effecter_pdr.data();
     EXPECT_EQ(effecter_pdr_out->effecter_data_size,
               PLDM_EFFECTER_DATA_SIZE_UINT32);
     EXPECT_EQ(effecter_pdr_out->range_field_format,
