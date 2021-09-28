@@ -1405,8 +1405,8 @@ TEST(GetNumericEffecterValue, testGoodDecodeResponse)
     uint8_t retcompletionCode;
     uint8_t reteffecter_dataSize;
     uint8_t reteffecter_operState;
-    uint8_t retpendingValue[2];
-    uint8_t retpresentValue[2];
+    uint8_t retpendingValue[4];
+    uint8_t retpresentValue[4];
 
     auto response = reinterpret_cast<pldm_msg*>(responseMsg.data());
     struct pldm_get_numeric_effecter_value_resp* resp =
@@ -1458,8 +1458,8 @@ TEST(GetNumericEffecterValue, testBadDecodeResponse)
     uint8_t retcompletionCode;
     uint8_t reteffecter_dataSize;
     uint8_t reteffecter_operState;
-    uint8_t retpendingValue[2];
-    uint8_t retpresentValue[2];
+    uint8_t retpendingValue[4];
+    uint8_t retpresentValue[4];
 
     auto response = reinterpret_cast<pldm_msg*>(responseMsg.data());
     struct pldm_get_numeric_effecter_value_resp* resp =
@@ -1838,7 +1838,7 @@ TEST(GetSensorReading, testBadDecodeResponse)
     uint8_t retpresent_state;
     uint8_t retprevious_state;
     uint8_t retevent_state;
-    uint8_t retpresentReading;
+    uint8_t retpresentReading[4];
 
     auto response = reinterpret_cast<pldm_msg*>(responseMsg.data());
     struct pldm_get_sensor_reading_resp* resp =
@@ -2373,6 +2373,94 @@ TEST(GetStateEffecterStates, testBadEncodeRequest)
         encode_get_state_effecter_states_req(instanceID, effecterId, nullptr);
 
     EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+}
+
+TEST(GetStateEffecterStates, testGoodDecodeResponse)
+{
+    constexpr uint8_t completionCode = 0;
+    constexpr uint8_t compEffecterCnt = 2;
+    std::array<uint8_t, hdrSize +
+                            PLDM_GET_STATE_EFFECTER_STATES_MIN_RESP_BYTES +
+                            sizeof(get_effecter_state_field) * compEffecterCnt>
+        responseMsg{};
+
+    std::array<get_effecter_state_field, compEffecterCnt> stateField{};
+    stateField[0] = {EFFECTER_OPER_STATE_ENABLED_NOUPDATEPENDING,
+                     PLDM_SENSOR_UNKNOWN, PLDM_SENSOR_UNKNOWN};
+    stateField[1] = {EFFECTER_OPER_STATE_ENABLED_UPDATEPENDING,
+                     PLDM_SENSOR_LOWERCRITICAL, PLDM_SENSOR_WARNING};
+
+    uint8_t retCompletionCode = 0;
+    uint8_t retCompEffecterCnt = 2;
+    std::array<get_effecter_state_field, 2> retstateField{};
+
+    auto response = reinterpret_cast<pldm_msg*>(responseMsg.data());
+    struct pldm_get_state_effecter_states_resp* resp =
+        reinterpret_cast<struct pldm_get_state_effecter_states_resp*>(
+            response->payload);
+
+    resp->completion_code = completionCode;
+    resp->comp_effecter_count = compEffecterCnt;
+    memcpy(resp->field, &stateField,
+           (sizeof(get_effecter_state_field) * compEffecterCnt));
+
+    auto rc = decode_get_state_effecter_states_resp(
+        response, responseMsg.size() - hdrSize, &retCompletionCode,
+        &retCompEffecterCnt, retstateField.data());
+
+    EXPECT_EQ(rc, PLDM_SUCCESS);
+    EXPECT_EQ(completionCode, retCompletionCode);
+    EXPECT_EQ(compEffecterCnt, retCompEffecterCnt);
+    EXPECT_EQ(stateField[0].effecter_op_state,
+              retstateField[0].effecter_op_state);
+    EXPECT_EQ(stateField[0].pending_state, retstateField[0].pending_state);
+    EXPECT_EQ(stateField[0].present_state, retstateField[0].present_state);
+    EXPECT_EQ(stateField[1].effecter_op_state,
+              retstateField[1].effecter_op_state);
+    EXPECT_EQ(stateField[1].pending_state, retstateField[1].pending_state);
+    EXPECT_EQ(stateField[1].present_state, retstateField[1].present_state);
+}
+
+TEST(GetStateEffecterStates, testBadDecodeResponse)
+{
+    constexpr uint8_t compEffecterCnt1 = 2;
+    std::array<uint8_t, hdrSize +
+                            PLDM_GET_STATE_EFFECTER_STATES_MIN_RESP_BYTES +
+                            sizeof(get_effecter_state_field) * compEffecterCnt1>
+        responseMsg{};
+
+    auto response = reinterpret_cast<pldm_msg*>(responseMsg.data());
+
+    auto rc = decode_get_state_effecter_states_resp(
+        response, responseMsg.size() - hdrSize, nullptr, nullptr, nullptr);
+
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_DATA);
+
+    constexpr uint8_t completionCode = 0;
+    constexpr uint8_t compEffecterCnt2 = 1;
+
+    std::array<get_effecter_state_field, compEffecterCnt2> stateField{};
+    stateField[0] = {EFFECTER_OPER_STATE_ENABLED_NOUPDATEPENDING,
+                     PLDM_SENSOR_UNKNOWN, PLDM_SENSOR_UNKNOWN};
+
+    uint8_t retCompletionCode = 0;
+    uint8_t retCompEffecterCnt = 0;
+    std::array<get_effecter_state_field, 1> retStateField{};
+
+    struct pldm_get_state_effecter_states_resp* resp =
+        reinterpret_cast<struct pldm_get_state_effecter_states_resp*>(
+            response->payload);
+
+    resp->completion_code = completionCode;
+    resp->comp_effecter_count = compEffecterCnt2;
+    memcpy(resp->field, &stateField,
+           (sizeof(get_effecter_state_field) * compEffecterCnt2));
+
+    rc = decode_get_state_effecter_states_resp(
+        response, responseMsg.size() - hdrSize, &retCompletionCode,
+        &retCompEffecterCnt, retStateField.data());
+
+    EXPECT_EQ(rc, PLDM_ERROR_INVALID_LENGTH);
 }
 
 int main(int argc, char** argv)

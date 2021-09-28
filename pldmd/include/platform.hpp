@@ -15,8 +15,10 @@
  */
 #pragma once
 
-#include "pdr_manager.hpp"
+#include "platform_terminus.hpp"
 #include "pldm.hpp"
+
+#include <boost/asio/steady_timer.hpp>
 
 #include "platform.h"
 
@@ -28,11 +30,45 @@ namespace platform
 constexpr uint16_t commandTimeout = 100;
 constexpr size_t commandRetryCount = 3;
 
-struct PlatformMonitoringControl
+using UUID = std::array<uint8_t, 16>;
+
+std::optional<UUID>
+    getTerminusUID(boost::asio::yield_context yield, const pldm_tid_t tid,
+                   std::optional<mctpw_eid_t> eid = std::nullopt);
+
+class Platform
 {
-    std::unique_ptr<PDRManager> pdrManager;
-    // TODO: Adds sensor and effecter resources
+  public:
+    void stopSensorPolling();
+    void startSensorPolling();
+    bool initTerminus(boost::asio::yield_context yield, const pldm_tid_t tid,
+                      const pldm::base::CommandSupportTable& commandTable);
+    bool deleteTerminus(const pldm_tid_t tid);
+
+  private:
+    bool induceAsyncDelay(boost::asio::yield_context yield, int delay);
+    void doPoll(boost::asio::yield_context yield);
+    void pollAllSensors();
+    void initializeSensorPollIntf();
+    void initializePlatformIntf();
+    bool isTerminusRemoved(const pldm_tid_t tid);
+    void removeTIDFromInitializationList(const pldm_tid_t tid);
+
+    std::map<pldm_tid_t, std::shared_ptr<PlatformTerminus>> platforms{};
+    std::unique_ptr<boost::asio::steady_timer> sensorTimer = nullptr;
+    bool isSensorPollRunning = false;
+    bool startSensorPoll = false;
+    bool stopSensorPoll = false;
+    std::set<pldm_tid_t> tidsUnderInitialization{};
 };
 
+/** @brief Pause sensor polling
+ *
+ *  Caller should resume the sensor polling manually using resumeSensorPolling()
+ */
+void pauseSensorPolling();
+
+/** @brief Resume sensor polling if it is paused*/
+void resumeSensorPolling();
 } // namespace platform
 } // namespace pldm

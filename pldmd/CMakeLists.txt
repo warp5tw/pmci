@@ -32,6 +32,7 @@ set (
     -Wno-strict-aliasing \
     -Wno-cast-align \
     -Wformat=2 \
+    -Wno-reorder \
 "
 )
 
@@ -40,11 +41,24 @@ set (CMAKE_MODULE_PATH ${CMAKE_CURRENT_SOURCE_DIR}/cmake ${CMAKE_MODULE_PATH})
 # Add header and sources here
 set (SRC_FILES ${PROJECT_SOURCE_DIR}/src/pldmd.cpp
                ${PROJECT_SOURCE_DIR}/src/platform.cpp
+               ${PROJECT_SOURCE_DIR}/src/platform_terminus.cpp
                ${PROJECT_SOURCE_DIR}/src/pdr_manager.cpp
+               ${PROJECT_SOURCE_DIR}/src/numeric_sensor_handler.cpp
+               ${PROJECT_SOURCE_DIR}/src/numeric_sensor.cpp
+               ${PROJECT_SOURCE_DIR}/src/thresholds.cpp
+               ${PROJECT_SOURCE_DIR}/src/state_sensor_handler.cpp
+               ${PROJECT_SOURCE_DIR}/src/pdr_utils.cpp
+               ${PROJECT_SOURCE_DIR}/src/numeric_effecter.cpp
+               ${PROJECT_SOURCE_DIR}/src/numeric_effecter_handler.cpp
+               ${PROJECT_SOURCE_DIR}/src/state_effecter_handler.cpp
                ${PROJECT_SOURCE_DIR}/src/sdbus-asio.cpp
+               ${PROJECT_SOURCE_DIR}/src/fwu_inventory.cpp
+               ${PROJECT_SOURCE_DIR}/src/fwu_utils.cpp
+               ${PROJECT_SOURCE_DIR}/src/pldm_fwu_image.cpp
                ${PROJECT_SOURCE_DIR}/src/firmware_update.cpp
                ${PROJECT_SOURCE_DIR}/src/fru.cpp
                ${PROJECT_SOURCE_DIR}/src/base.cpp
+               ${PROJECT_SOURCE_DIR}/src/utils.cpp
 )
 
 set (HEADER_FILES ${PROJECT_SOURCE_DIR}/include/pldm.hpp
@@ -57,7 +71,7 @@ set (SERVICE_FILES
 
 add_executable(${PROJECT_NAME} ${SRC_FILES} ${HEADER_FILES})
 
-target_link_libraries (${PROJECT_NAME} sdbusplus -lsystemd -lpldm_intel
+target_link_libraries (${PROJECT_NAME} mctpwplus sdbusplus -lsystemd -lpldm_intel
                         -lpthread -lstdc++fs -lphosphor_dbus -lmctpw
                         -lboost_coroutine)
 

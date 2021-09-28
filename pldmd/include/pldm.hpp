@@ -15,11 +15,15 @@
  */
 #pragma once
 
+#include "base.hpp"
+
 #include <boost/asio.hpp>
+#include <boost/asio/error.hpp>
 #include <boost/asio/spawn.hpp>
 #include <memory>
 #include <sdbusplus/asio/connection.hpp>
 #include <sdbusplus/asio/object_server.hpp>
+#include <unordered_map>
 #include <vector>
 
 #include "base.h"
@@ -28,10 +32,25 @@
 std::shared_ptr<boost::asio::io_context> getIoContext();
 std::shared_ptr<sdbusplus::asio::connection> getSdBus();
 std::shared_ptr<sdbusplus::asio::object_server> getObjServer();
+std::unique_ptr<sdbusplus::asio::dbus_interface>
+    addUniqueInterface(const std::string& path, const std::string& name);
+
+/** @brief flag to enable debugging*/
+extern bool debug;
 
 namespace pldm
 {
+using DBusInterfacePtr = std::shared_ptr<sdbusplus::asio::dbus_interface>;
+using DBusObjectPath = std::string;
+
+constexpr pldm_tid_t pldmInvalidTid = 0;
+constexpr uint8_t pldmInvalidType = 0xFF;
 constexpr size_t pldmMsgHdrSize = sizeof(pldm_msg_hdr);
+
+/** @brief Limit the maximum length of PLDM message*/
+constexpr size_t maxPLDMMessageLen = 64 /*Maximum MCTP packet payload len*/ -
+                                     1 /*MCTP messageType size*/ -
+                                     pldmMsgHdrSize;
 
 /** @brief pldm_empty_request
  *
@@ -42,11 +61,29 @@ struct PLDMEmptyRequest
     struct pldm_msg_hdr header;
 } __attribute__((packed));
 
-using PLDMCommandTable = std::vector<std::map<
-    ver32_t, /*Supported PLDM Version*/
-    std::array<bitfield8_t, PLDM_MAX_CMDS_PER_TYPE / 8> /*Supported PLDM
-                                                           Commands*/
-    >>;
+/** @brief  Manage EID-TID mapping */
+struct TIDMapper
+{
+    // Mapper will have 1:1 mapping between TID and EID
+    using TIDMap = std::unordered_map<
+    pldm_tid_t, /*TID as key*/
+    mctpw_eid_t /*TODO: Update to std::variant<MCTP_EID, RBT for NCSI) etc.*/>;
+
+  public:
+    bool addEntry(const pldm_tid_t tid, const mctpw_eid_t eid);
+    void removeEntry(const pldm_tid_t tid);
+    std::optional<pldm_tid_t> getMappedTID(const mctpw_eid_t eid);
+    std::optional<mctpw_eid_t> getMappedEID(const pldm_tid_t tid);
+    TIDMap getTIDMap()
+    {
+        return tidMap;
+    }
+
+  private:
+    TIDMap tidMap;
+};
+
+extern TIDMapper tidMapper;
 
 /** @brief Creates new Instance ID for PLDM messages
  *
@@ -57,6 +94,37 @@ using PLDMCommandTable = std::vector<std::map<
  * @return PLDM Instance ID
  */
 uint8_t createInstanceId(pldm_tid_t tid);
+
+/** @brief Reserves Bandwidth for firmware device to send command to update
+agent
+ *
+ * During firmware update firmware device need to send commands to update agent.
+With this API PLDM daemon tells MCTP daemon to hold the MUX. So that FD can send
+the commands to UA(BMC)
+ * @param yield - Context object that represents the currently executing
+ * coroutine.
+ * @param tid - TID of the PLDM device
+ * @param pldmType - pldm type.
+ * @param timeout - Maximum time period in seconds to hold the mux
+ *
+ * @return Status of the operation
+ */
+bool reserveBandwidth(const boost::asio::yield_context yield,
+                      const pldm_tid_t tid, const uint8_t pldmType,
+                      const uint16_t timeout);
+
+/** @brief Release Bandwidth for tid
+ *
+ * @param yield - Context object that represents the currently executing
+ * coroutine.
+ * @param tid - TID of the PLDM device
+ * @param pldmType - pldm type.
+ *
+ * @return Status of the operation
+ */
+bool releaseBandwidth(const boost::asio::yield_context yield,
+                      const pldm_tid_t tid, const uint8_t pldmType);
+// TODO: Add an API to free the Instance ID after usage.
 
 /** @brief Returns PLDM message Instance ID
  *
@@ -94,12 +162,6 @@ bool sendReceivePldmMessage(boost::asio::yield_context yield,
                             std::vector<uint8_t>& pldmResp,
                             std::optional<mctpw_eid_t> eid = std::nullopt);
 
-// Helper functions to manage EID-TID mapping
-std::optional<pldm_tid_t> allocateTid();
-void addToMapper(const pldm_tid_t tid, const mctpw_eid_t eid);
-std::optional<pldm_tid_t> getTidFromMapper(const mctpw_eid_t eid);
-std::optional<mctpw_eid_t> getEidFromMapper(const pldm_tid_t tid);
-
 /** @brief Validate PLDM message encode
  *
  * @param tid[in] - TID of the PLDM device
@@ -133,23 +195,19 @@ bool validatePLDMRespDecode(const pldm_tid_t tid, const int rc,
  * Even if the sender is expecting a response for the message,
  * it can be received through pldmMsgRecvCallback()
  *
+ * @param yield - Context object that represents the currently executing
+ * coroutine
  * @param tid - TID of the PLDM device
+ * @param retryCount - Maximum retry
  * @param msgTag - MCTP message tag
  * @param tagOwner - MCTP tag owner bit
  * @param payload - PLDM message payload
  *
  * @return Status of the operation
  */
-bool sendPldmMessage(const pldm_tid_t tid, const uint8_t msgTag,
+bool sendPldmMessage(boost::asio::yield_context yield, const pldm_tid_t tid,
+                     uint8_t retryCount, const uint8_t msgTag,
                      const bool tagOwner, std::vector<uint8_t> payload);
-
-namespace base
-{
-
-bool baseInit(boost::asio::yield_context yield, const mctpw_eid_t eid,
-              pldm_tid_t& tid);
-
-} // namespace base
 
 namespace platform
 {
@@ -160,33 +218,33 @@ namespace platform
  *
  * @param yield - Context object the represents the currently executing
  * coroutine
- * @param tid - TID of the PLDM device
+ * @param tid - TID of the PLDM terminus
  * @param commandTable - PLDM command table which defines supported Platform M&C
  * versions and commands
  *
  * @return Status of the operation
  */
 bool platformInit(boost::asio::yield_context yield, const pldm_tid_t tid,
-                  const PLDMCommandTable& commandTable);
+                  const pldm::base::CommandSupportTable& commandTable);
 
-/** @brief Destroy Platform Monitoring and Control
+/** @brief Delete Platform Monitoring and Control
  *
  * Destroy Platform Monitoring and Control resources allocated for specific TID.
  *
- * @param tid - TID of the PLDM device
+ * @param tid - TID of the PLDM terminus
  *
  * @return Status of the operation
  */
 
-bool platformDestroy(const pldm_tid_t tid);
+bool deleteMnCTerminus(const pldm_tid_t tid);
 
 } // namespace platform
 
-// TODO: add destroy APIs for Base, FRU and FWU
 namespace fru
 {
 
 bool fruInit(boost::asio::yield_context yield, const pldm_tid_t tid);
+bool deleteFRUDevice(const pldm_tid_t tid);
 
 } // namespace fru
 
@@ -194,8 +252,10 @@ namespace fwu
 {
 
 bool fwuInit(boost::asio::yield_context yield, const pldm_tid_t tid);
-void pldmMsgRecvCallback(const pldm_tid_t tid, const uint8_t msgTag,
-                         const bool tagOwner, std::vector<uint8_t>& message);
+bool deleteFWDevice(const pldm_tid_t tid);
+void pldmMsgRecvFwUpdCallback(const pldm_tid_t tid, const uint8_t msgTag,
+                              const bool tagOwner,
+                              std::vector<uint8_t>& message);
 
 } // namespace fwu
 

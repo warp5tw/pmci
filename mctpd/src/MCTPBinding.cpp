@@ -11,15 +11,15 @@
 #include "libmctp-msgtypes.h"
 #include "libmctp.h"
 
+constexpr int noMoreSet = 0xFF;
+static std::string vendIdFormat = "0x8086";
+static const std::string nullUUID = "00000000-0000-0000-0000-000000000000";
+
 constexpr sd_id128_t mctpdAppId = SD_ID128_MAKE(c4, e4, d9, 4a, 88, 43, 4d, f0,
                                                 94, 9d, bb, 0a, af, 53, 4e, 6d);
 constexpr unsigned int ctrlTxPollInterval = 5;
 constexpr size_t minCmdRespSize = 4;
 constexpr int completionCodeIndex = 3;
-
-const std::unordered_map<uint8_t, version_entry> versionNumbers = {
-    {MCTP_MESSAGE_TYPE_MCTP_CTRL, {0xF1, 0xF3, 0xF1, 0}},
-    {MCTP_GET_VERSION_SUPPORT_BASE_INFO, {0xF1, 0xF3, 0xF1, 0}}};
 
 /* According DSP0239(Version: 1.7.0) */
 static const std::unordered_map<uint8_t,
@@ -96,6 +96,70 @@ static const std::unordered_map<uint8_t,
                               /*0x40, CXL 1.x*/
                               /*0x41:0xFF Reserved*/
 };
+
+void DeviceWatcher::deviceDiscoveryInit()
+{
+    previousInitList = std::move(currentInitList);
+    for (auto itr = successiveInitCount.begin();
+         itr != successiveInitCount.end();)
+    {
+        if (previousInitList.count(itr->first) == 0)
+        {
+            itr = successiveInitCount.erase(itr);
+        }
+        else
+        {
+            ++itr;
+        }
+    }
+}
+
+bool DeviceWatcher::isDeviceGoodForInit(const BindingPrivateVect& bindingPvt)
+{
+    return ignoreList.count(bindingPvt) == 0;
+}
+
+bool DeviceWatcher::checkDeviceInitThreshold(
+    const BindingPrivateVect& bindingPvt)
+{
+    constexpr int successiveDeviceInitThold = 10;
+
+    currentInitList.emplace(bindingPvt);
+    if (previousInitList.count(bindingPvt) == 0)
+    {
+        successiveInitCount.insert_or_assign(bindingPvt, 0);
+        return true;
+    }
+
+    auto search = successiveInitCount.find(bindingPvt);
+    if (search != successiveInitCount.end())
+    {
+        if (search->second > successiveDeviceInitThold)
+        {
+            return false;
+        }
+
+        search->second += 1;
+        if (search->second == successiveDeviceInitThold)
+        {
+            ignoreList.emplace(bindingPvt);
+
+            std::stringstream bindingPvtStr;
+            for (auto re : bindingPvt)
+            {
+                bindingPvtStr << " 0x" << std::hex << std::setfill('0')
+                              << std::setw(2) << static_cast<int>(re);
+            }
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                ("Device discovery failed successively for device having "
+                 "binding private:" +
+                 bindingPvtStr.str() + "; Placing the device into ignore list.")
+                    .c_str());
+            return false;
+        }
+    }
+    return true;
+}
 
 static uint8_t getInstanceId(const uint8_t msg)
 {
@@ -241,12 +305,19 @@ void MctpBinding::handleCtrlResp(void* msg, const size_t len)
             mctp_ctrl_msg_hdr* reqHeader =
                 reinterpret_cast<mctp_ctrl_msg_hdr*>(req.data());
 
+            if (!reqHeader)
+            {
+                phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                    "MCTP Control Request Header is null");
+                return false;
+            }
+
             // TODO: Check Message terminus with Instance ID
             // (EID, TO, Msg Tag) + Instance ID
             if (getInstanceId(reqHeader->rq_dgram_inst) ==
                 getInstanceId(respHeader->rq_dgram_inst))
             {
-                phosphor::logging::log<phosphor::logging::level::INFO>(
+                phosphor::logging::log<phosphor::logging::level::DEBUG>(
                     "Matching Control command request found");
 
                 uint8_t* tmp = reinterpret_cast<uint8_t*>(msg);
@@ -278,9 +349,22 @@ void MctpBinding::handleCtrlResp(void* msg, const size_t len)
  * passed to libmctp and we have to match its expected prototype.
  */
 void MctpBinding::rxMessage(uint8_t srcEid, void* data, void* msg, size_t len,
-                            bool tagOwner, uint8_t msgTag,
-                            void* /*bindingPrivate*/)
+                            bool tagOwner, uint8_t msgTag, void* bindingPrivate)
 {
+    if (msg == nullptr)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "MCTP Receive Message is not initialized.");
+        return;
+    }
+
+    if (data == nullptr)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Null data received");
+        return;
+    }
+
     uint8_t* payload = reinterpret_cast<uint8_t*>(msg);
     uint8_t msgType = payload[0]; // Always the first byte
     std::vector<uint8_t> response;
@@ -288,6 +372,11 @@ void MctpBinding::rxMessage(uint8_t srcEid, void* data, void* msg, size_t len,
     response.assign(payload, payload + len);
 
     auto& binding = *static_cast<MctpBinding*>(data);
+
+    if (binding.bindingModeType == mctp_server::BindingModeTypes::Endpoint)
+    {
+        binding.addUnknownEIDToDeviceTable(srcEid, bindingPrivate);
+    }
 
     if (msgType != MCTP_MESSAGE_TYPE_MCTP_CTRL)
     {
@@ -310,7 +399,7 @@ void MctpBinding::rxMessage(uint8_t srcEid, void* data, void* msg, size_t len,
     if (!tagOwner && mctp_is_mctp_ctrl_msg(msg, len) &&
         !mctp_ctrl_msg_is_req(msg, len))
     {
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "MCTP Control packet response received!!");
         binding.handleCtrlResp(msg, len);
     }
@@ -331,6 +420,14 @@ void MctpBinding::handleMCTPControlRequests(uint8_t srcEid, void* data,
             "MCTP Control Message is not initialized.");
         return;
     }
+
+    if (data == nullptr)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Null data received");
+        return;
+    }
+
     if (!tagOwner)
     {
         phosphor::logging::log<phosphor::logging::level::WARNING>(
@@ -338,6 +435,12 @@ void MctpBinding::handleMCTPControlRequests(uint8_t srcEid, void* data,
         return;
     }
     auto& binding = *static_cast<MctpBinding*>(data);
+
+    if (binding.bindingModeType == mctp_server::BindingModeTypes::Endpoint)
+    {
+        binding.addUnknownEIDToDeviceTable(srcEid, bindingPrivate);
+    }
+
     binding.handleCtrlReq(srcEid, bindingPrivate, msg, len, msgTag);
 }
 
@@ -348,54 +451,48 @@ std::optional<std::vector<uint8_t>>
     return std::vector<uint8_t>();
 }
 
+bool MctpBinding::reserveBandwidth(const mctp_eid_t /*eid*/,
+                                   const uint16_t /*timeout*/)
+{
+    return true;
+}
+
+bool MctpBinding::releaseBandwidth(const mctp_eid_t /*eid*/)
+{
+    return true;
+}
+
 bool MctpBinding::isReceivedPrivateDataCorrect(const void* /*bindingPrivate*/)
 {
     return true;
 }
 
 MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
-                         const std::string& objPath, ConfigurationVariant& conf,
-                         boost::asio::io_context& ioc) :
+                         const std::string& objPath, const Configuration& conf,
+                         boost::asio::io_context& ioc,
+                         const mctp_server::BindingTypes bindingType) :
     io(ioc),
-    objectServer(objServer), ctrlTxTimer(io)
+    bindingID(bindingType), objectServer(objServer), ctrlTxTimer(io)
 {
+    objServer->add_manager(objPath);
     mctpInterface = objServer->add_interface(objPath, mctp_server::interface);
+
+    /*initialize the map*/
+    versionNumbersForUpperLayerResponder.insert(
+        std::pair<uint8_t, version_entry>{MCTP_MESSAGE_TYPE_MCTP_CTRL,
+                                          {0xF1, 0xF3, 0xF1, 0}});
+    versionNumbersForUpperLayerResponder.insert(
+        std::pair<uint8_t, version_entry>{MCTP_GET_VERSION_SUPPORT_BASE_INFO,
+                                          {0xF1, 0xF3, 0xF1, 0}});
 
     try
     {
-        if (SMBusConfiguration* smbusConf =
-                std::get_if<SMBusConfiguration>(&conf))
-        {
-            ownEid = smbusConf->defaultEid;
-            bindingID = mctp_server::BindingTypes::MctpOverSmbus;
-            bindingMediumID = smbusConf->mediumId;
-            bindingModeType = smbusConf->mode;
-            ctrlTxRetryDelay = smbusConf->reqToRespTime;
-            ctrlTxRetryCount = smbusConf->reqRetryCount;
+        ownEid = conf.defaultEid;
+        bindingMediumID = conf.mediumId;
+        bindingModeType = conf.mode;
 
-            // TODO: Add bus owner interface.
-            // TODO: If we are not top most busowner, wait for top mostbus owner
-            // to issue EID Pool
-            if (smbusConf->mode == mctp_server::BindingModeTypes::BusOwner)
-            {
-                initializeEidPool(smbusConf->eidPool);
-            }
-        }
-        else if (PcieConfiguration* pcieConf =
-                     std::get_if<PcieConfiguration>(&conf))
-        {
-            ownEid = pcieConf->defaultEid;
-            bindingID = mctp_server::BindingTypes::MctpOverPcieVdm;
-            bindingMediumID = pcieConf->mediumId;
-            bindingModeType = pcieConf->mode;
-            ctrlTxRetryDelay = pcieConf->reqToRespTime;
-            ctrlTxRetryCount = pcieConf->reqRetryCount;
-        }
-        else
-        {
-            throw std::system_error(
-                std::make_error_code(std::errc::invalid_argument));
-        }
+        ctrlTxRetryDelay = conf.reqToRespTime;
+        ctrlTxRetryCount = conf.reqRetryCount;
 
         createUuid();
         registerProperty(mctpInterface, "Eid", ownEid);
@@ -425,31 +522,103 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
             "SendMctpMessagePayload",
             [this](uint8_t dstEid, uint8_t msgTag, bool tagOwner,
                    std::vector<uint8_t> payload) {
+                if (payload.size() > 0)
+                {
+                    uint8_t msgType = payload[0]; // Always the first byte
+                    if (msgType == MCTP_MESSAGE_TYPE_MCTP_CTRL)
+                    {
+                        phosphor::logging::log<
+                            phosphor::logging::level::WARNING>(
+                            "Cannot transmit control messages");
+                        return static_cast<int>(mctpErrorOperationNotAllowed);
+                    }
+                }
+
+                if (rsvBWActive && dstEid != reservedEID)
+                {
+                    phosphor::logging::log<phosphor::logging::level::WARNING>(
+                        (("SendMctpMessagePayload is not allowed. "
+                          "ReserveBandwidth is active "
+                          "for EID: ") +
+                         std::to_string(reservedEID))
+                            .c_str());
+                    return static_cast<int>(mctpErrorRsvBWIsNotActive);
+                }
                 std::optional<std::vector<uint8_t>> pvtData =
                     getBindingPrivateData(dstEid);
-                if (pvtData)
+                if (!pvtData)
                 {
-                    return mctp_message_tx(mctp, dstEid, payload.data(),
-                                           payload.size(), tagOwner, msgTag,
-                                           pvtData->data());
+                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                        "SendMctpMessagePayload: Invalid destination EID");
+                    return static_cast<int>(mctpInternalError);
                 }
-                phosphor::logging::log<phosphor::logging::level::ERR>(
-                    "Invalid destination EID");
-                return -1;
+                if (mctp_message_tx(mctp, dstEid, payload.data(),
+                                    payload.size(), tagOwner, msgTag,
+                                    pvtData->data()) < 0)
+                {
+                    return static_cast<int>(mctpInternalError);
+                }
+                return static_cast<int>(mctpSuccess);
             });
 
+        mctpInterface->register_method(
+            "ReserveBandwidth",
+            [this](const mctp_eid_t eid, const uint16_t timeout) {
+                if (!reserveBandwidth(eid, timeout))
+                {
+                    phosphor::logging::log<phosphor::logging::level::WARNING>(
+                        ("Reserve bandwidth failed for EID: " +
+                         std::to_string(eid))
+                            .c_str());
+                    return static_cast<int>(mctpErrorRsvBWFailed);
+                }
+                phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                    ("Reserve bandwidth is active for EID: " +
+                     std::to_string(eid))
+                        .c_str());
+                return static_cast<int>(mctpSuccess);
+            });
+        mctpInterface->register_method("ReleaseBandwidth", [this](
+                                                               const mctp_eid_t
+                                                                   eid) {
+            if (!releaseBandwidth(eid))
+            {
+                phosphor::logging::log<phosphor::logging::level::ERR>(
+                    ("Release bandwidth failed for EID: " + std::to_string(eid))
+                        .c_str());
+                return static_cast<int>(mctpErrorReleaseBWFailed);
+            }
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                ("Bandwidth released for EID: " + std::to_string(eid)).c_str());
+            return static_cast<int>(mctpSuccess);
+        });
         mctpInterface->register_method(
             "SendReceiveMctpMessagePayload",
             [this](boost::asio::yield_context yield, uint8_t dstEid,
                    std::vector<uint8_t> payload,
                    uint16_t timeout) -> std::vector<uint8_t> {
-                uint8_t msgType = payload[0]; // Always the first byte
-                if (msgType == MCTP_MESSAGE_TYPE_MCTP_CTRL)
+                if (rsvBWActive && dstEid != reservedEID)
                 {
-                    phosphor::logging::log<phosphor::logging::level::ERR>(
-                        "Cannot transmit control messages");
+                    phosphor::logging::log<phosphor::logging::level::WARNING>(
+                        (("SendReceiveMctpMessagePayload is not allowed. "
+                          "ReserveBandwidth is "
+                          "active for EID: ") +
+                         std::to_string(reservedEID))
+                            .c_str());
                     throw std::system_error(
                         std::make_error_code(std::errc::invalid_argument));
+                }
+
+                if (payload.size() > 0)
+                {
+                    uint8_t msgType = payload[0]; // Always the first byte
+                    if (msgType == MCTP_MESSAGE_TYPE_MCTP_CTRL)
+                    {
+                        phosphor::logging::log<phosphor::logging::level::ERR>(
+                            "Cannot transmit control messages");
+                        throw std::system_error(
+                            std::make_error_code(std::errc::invalid_argument));
+                    }
                 }
 
                 std::optional<std::vector<uint8_t>> pvtData =
@@ -457,7 +626,8 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
                 if (!pvtData)
                 {
                     phosphor::logging::log<phosphor::logging::level::ERR>(
-                        "Invalid destination EID");
+                        "SendReceiveMctpMessagePayload: Invalid destination "
+                        "EID");
                     throw std::system_error(
                         std::make_error_code(std::errc::invalid_argument));
                 }
@@ -481,6 +651,7 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
                 }
                 if (!message->response)
                 {
+                    transmissionQueue.dispose(dstEid, message);
                     phosphor::logging::log<phosphor::logging::level::ERR>(
                         "No response");
                     throw std::system_error(
@@ -500,6 +671,20 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
                                        std::vector<uint8_t>>(
             "MessageReceivedSignal");
 
+        mctpInterface->register_method(
+            "RegisterResponder",
+            [this](uint8_t msgTypeName,
+                   std::vector<uint8_t> inputVersion) -> bool {
+                return registerUpperLayerResponder(msgTypeName, inputVersion);
+            });
+
+        // register VDPCI responder with MCTP for upper layers
+        mctpInterface->register_method(
+            "RegisterVdpciResponder",
+            [this](uint16_t vendorIdx, uint16_t cmdSetType) -> bool {
+                return manageVdpciVersionInfo(vendorIdx, cmdSetType);
+            });
+
         if (mctpInterface->initialize() == false)
         {
             throw std::system_error(
@@ -515,8 +700,112 @@ MctpBinding::MctpBinding(std::shared_ptr<object_server>& objServer,
     }
 }
 
+bool MctpBinding::registerUpperLayerResponder(uint8_t typeNo,
+                                              std::vector<uint8_t>& versionData)
+{
+    bool ret = false;
+    switch (typeNo)
+    {
+        case MCTP_MESSAGE_TYPE_PLDM:
+        case MCTP_MESSAGE_TYPE_NCSI:
+        case MCTP_MESSAGE_TYPE_ETHERNET:
+        case MCTP_MESSAGE_TYPE_NVME:
+        case MCTP_MESSAGE_TYPE_SPDM:
+            ret = manageVersionInfo(typeNo, versionData);
+            break;
+        default:
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Invalid Type for Registration To MCTP");
+            break;
+    }
+    return ret;
+}
+
+bool MctpBinding::manageVersionInfo(uint8_t typeNo,
+                                    std::vector<uint8_t>& versionInfo)
+{
+    struct version_entry verString;
+
+    if (versionInfo.size() != 4)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "The Version info is of invalid length...");
+        return false;
+    }
+
+    if (versionNumbersForUpperLayerResponder.find(typeNo) ==
+        versionNumbersForUpperLayerResponder.end())
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "No existing Data for typeNo, So pushing into map");
+        std::copy_n(versionInfo.begin(), sizeof(version_entry),
+                    reinterpret_cast<uint8_t*>(&verString));
+
+        versionNumbersForUpperLayerResponder.emplace(typeNo, verString);
+        return true;
+    }
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
+        "Existing Data In Map for the typeNo");
+    return false;
+}
+
+bool MctpBinding::manageVdpciVersionInfo(uint16_t vendorIdx,
+                                         uint16_t cmdSetType)
+{
+    struct InternalVdmSetDatabase vdmSupport;
+
+    auto retIter = std::find_if(vdmSetDatabase.begin(), vdmSetDatabase.end(),
+                                [vendorIdx](const InternalVdmSetDatabase& vm) {
+                                    return vm.vendorId == vendorIdx;
+                                });
+
+    if (retIter == vdmSetDatabase.end())
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "No existing Data for vendorId, So pushing into map");
+
+        vdmSupport.vendorId = vendorIdx;
+        vdmSupport.commandSetType = cmdSetType;
+        vdmSupport.vendorIdFormat = 0; // 0x00 for VDPCI.
+        vdmSetDatabase.push_back(vdmSupport);
+    }
+    else
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "existing Data for vendorId, So updating into map");
+        if (retIter->commandSetType != cmdSetType)
+        { /*may be the details need to be updated*/
+            retIter->vendorId = vendorIdx;
+            retIter->commandSetType = cmdSetType;
+            retIter->vendorIdFormat = 0; // 0x00 for VDPCI
+        }
+    }
+
+    return true;
+}
+
 MctpBinding::~MctpBinding()
 {
+    for (auto& iter : endpointInterface)
+    {
+        objectServer->remove_interface(iter.second);
+    }
+
+    for (auto& iter : msgTypeInterface)
+    {
+        objectServer->remove_interface(iter.second);
+    }
+
+    for (auto& iter : uuidInterface)
+    {
+        objectServer->remove_interface(iter.second);
+    }
+
+    for (auto& iter : vendorIdInterface)
+    {
+        objectServer->remove_interface(iter.second);
+    }
+
     objectServer->remove_interface(mctpInterface);
     if (mctp)
     {
@@ -576,17 +865,36 @@ void MctpBinding::initializeEidPool(const std::set<mctp_eid_t>& pool)
 {
     for (auto const& epId : pool)
     {
-        eidPoolMap.emplace(epId, false);
+        eidPool.push_back(std::make_pair(epId, false));
     }
 }
 
 void MctpBinding::updateEidStatus(const mctp_eid_t endpointId,
                                   const bool assigned)
 {
-    auto eidItr = eidPoolMap.find(endpointId);
-    if (eidItr != eidPoolMap.end())
+    bool eidPresent = false;
+    for (auto const& eidPair : eidPool)
     {
-        eidItr->second = assigned;
+        if (eidPair.first == endpointId)
+        {
+            eidPresent = true;
+            break;
+        }
+    }
+    // To implement EID pool in FIFO: The eid entry in the pool is removed and
+    // inserted at the end, so that the older EID from the pool is picked for
+    // registering the endpoint.
+
+    eidPool.erase(std::remove_if(eidPool.begin(), eidPool.end(),
+                                 [endpointId](auto const& eidPair) {
+                                     return (eidPair.first == endpointId);
+                                 }),
+                  eidPool.end());
+
+    if (eidPresent)
+    {
+        eidPool.push_back(std::make_pair(endpointId, assigned));
+
         if (assigned)
         {
             phosphor::logging::log<phosphor::logging::level::DEBUG>(
@@ -613,14 +921,14 @@ mctp_eid_t MctpBinding::getAvailableEidFromPool()
     // Note:- No need to check for busowner role explicitly when accessing EID
     // pool since getAvailableEidFromPool will be called only in busowner mode.
 
-    for (auto& eidPair : eidPoolMap)
+    for (auto& [eid, eidAssignedStatus] : eidPool)
     {
-        if (!eidPair.second)
+        if (!eidAssignedStatus)
         {
-            phosphor::logging::log<phosphor::logging::level::INFO>(
-                ("Allocated EID: " + std::to_string(eidPair.first)).c_str());
-            eidPair.second = true;
-            return eidPair.first;
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                ("Allocated EID: " + std::to_string(eid)).c_str());
+            eidAssignedStatus = true;
+            return eid;
         }
     }
     phosphor::logging::log<phosphor::logging::level::ERR>(
@@ -629,15 +937,16 @@ mctp_eid_t MctpBinding::getAvailableEidFromPool()
         std::make_error_code(std::errc::address_not_available));
 }
 
-bool MctpBinding::sendMctpMessage(mctp_eid_t destEid, std::vector<uint8_t> req,
-                                  bool tagOwner, uint8_t msgTag,
-                                  std::vector<uint8_t> bindingPrivate)
+bool MctpBinding::sendMctpCtrlMessage(mctp_eid_t destEid,
+                                      std::vector<uint8_t> req, bool tagOwner,
+                                      uint8_t msgTag,
+                                      std::vector<uint8_t> bindingPrivate)
 {
     if (mctp_message_tx(mctp, destEid, req.data(), req.size(), tagOwner, msgTag,
                         bindingPrivate.data()) < 0)
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Error in mctp_message_tx");
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "MCTP control: mctp_message_tx failed");
         return false;
     }
     return true;
@@ -651,7 +960,7 @@ void MctpBinding::processCtrlTxQueue()
         if (ec == boost::asio::error::operation_aborted)
         {
             // timer aborted do nothing
-            phosphor::logging::log<phosphor::logging::level::INFO>(
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
                 "ctrlTxTimer operation_aborted");
             return;
         }
@@ -682,11 +991,11 @@ void MctpBinding::processCtrlTxQueue()
                         if (retryCount > 0 &&
                             maxRespDelay <= retryCount * ctrlTxRetryDelay)
                         {
-                            if (sendMctpMessage(destEid, req, true, 0,
-                                                bindingPrivate))
+                            if (sendMctpCtrlMessage(destEid, req, true, 0,
+                                                    bindingPrivate))
                             {
                                 phosphor::logging::log<
-                                    phosphor::logging::level::INFO>(
+                                    phosphor::logging::level::DEBUG>(
                                     "Packet transmited");
                                 state = PacketState::transmitted;
                             }
@@ -700,7 +1009,7 @@ void MctpBinding::processCtrlTxQueue()
 
                     state = PacketState::noResponse;
                     std::vector<uint8_t> resp1 = {};
-                    phosphor::logging::log<phosphor::logging::level::ERR>(
+                    phosphor::logging::log<phosphor::logging::level::DEBUG>(
                         "Retry timed out, No response");
 
                     // Call Callback function
@@ -713,7 +1022,7 @@ void MctpBinding::processCtrlTxQueue()
         {
             ctrlTxTimer.cancel();
             ctrlTxTimerExpired = true;
-            phosphor::logging::log<phosphor::logging::level::INFO>(
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
                 "ctrlTxQueue empty, canceling timer");
         }
         else
@@ -728,13 +1037,13 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
 {
     if (req == nullptr)
     {
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "MCTP Control Request is not initialized.");
         return;
     }
     if (!isReceivedPrivateDataCorrect(bindingPrivate))
     {
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Binding Private Data is not correct.");
         return;
     }
@@ -746,8 +1055,12 @@ void MctpBinding::handleCtrlReq(uint8_t destEid, void* bindingPrivate,
     mctp_ctrl_msg_hdr* reqHeader =
         reinterpret_cast<mctp_ctrl_msg_hdr*>(request.data());
 
-    if (reqHeader == nullptr)
-         return;
+    if (!reqHeader)
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "MCTP Control Request Header is null");
+        return;
+    }
 
     switch (reqHeader->command_code)
     {
@@ -869,14 +1182,16 @@ bool MctpBinding::handleGetVersionSupport(mctp_eid_t, void*,
 
     std::vector<version_entry> versions = {};
 
-    if (versionNumbers.find(req->msg_type_number) == versionNumbers.end())
+    if (versionNumbersForUpperLayerResponder.find(req->msg_type_number) ==
+        versionNumbersForUpperLayerResponder.end())
     {
         resp->completion_code =
             MCTP_CTRL_CC_GET_MCTP_VER_SUPPORT_UNSUPPORTED_TYPE;
     }
     else
     {
-        versions.push_back(versionNumbers.at(req->msg_type_number));
+        versions.push_back(
+            versionNumbersForUpperLayerResponder.at(req->msg_type_number));
         resp->completion_code = MCTP_CTRL_CC_SUCCESS;
     }
     resp->number_of_entries = static_cast<uint8_t>(versions.size());
@@ -928,9 +1243,9 @@ void MctpBinding::pushToCtrlTxQueue(
         state, ctrlTxRetryCount, ((ctrlTxRetryCount + 1) * ctrlTxRetryDelay),
         destEid, bindingPrivate, req, callback));
 
-    if (sendMctpMessage(destEid, req, true, 0, bindingPrivate))
+    if (sendMctpCtrlMessage(destEid, req, true, 0, bindingPrivate))
     {
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Packet transmited");
         state = PacketState::transmitted;
     }
@@ -958,24 +1273,25 @@ PacketState MctpBinding::sendAndRcvMctpCtrl(
     std::function<void(PacketState, std::vector<uint8_t>&)> callback =
         [&resp, &pktState, &timer](PacketState state,
                                    std::vector<uint8_t>& response) {
-            phosphor::logging::log<phosphor::logging::level::INFO>(
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
                 "Callback triggered");
 
             resp = response;
             pktState = state;
             timer.cancel();
 
-            phosphor::logging::log<phosphor::logging::level::INFO>(
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
                 ("Packet state: " + std::to_string(static_cast<int>(pktState)))
                     .c_str());
         };
 
     pushToCtrlTxQueue(pktState, destEid, bindingPrivate, req, callback);
 
-    do
+    // Wait for the state to change
+    while (pktState == PacketState::pushedForTransmission)
     {
         timer.expires_after(std::chrono::milliseconds(ctrlTxRetryDelay));
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "sendAndRcvMctpCtrl: Timer created, ctrl cmd waiting");
         timer.async_wait(yield[ec]);
         if (ec && ec != boost::asio::error::operation_aborted)
@@ -983,8 +1299,7 @@ PacketState MctpBinding::sendAndRcvMctpCtrl(
             phosphor::logging::log<phosphor::logging::level::ERR>(
                 "sendAndRcvMctpCtrl: async_wait error");
         }
-    } while (pktState == PacketState::pushedForTransmission);
-    // Wait for the state to change
+    }
 
     return pktState;
 }
@@ -1149,7 +1464,7 @@ bool MctpBinding::getEidCtrlCmd(boost::asio::yield_context& yield,
         return false;
     }
 
-    phosphor::logging::log<phosphor::logging::level::INFO>("Get EID success");
+    phosphor::logging::log<phosphor::logging::level::DEBUG>("Get EID success");
     return true;
 }
 
@@ -1182,8 +1497,23 @@ bool MctpBinding::setEidCtrlCmd(boost::asio::yield_context& yield,
         return false;
     }
 
-    phosphor::logging::log<phosphor::logging::level::INFO>("Set EID success");
+    phosphor::logging::log<phosphor::logging::level::DEBUG>("Set EID success");
     return true;
+}
+
+static std::string formatUUID(guid_t& uuid)
+{
+    const size_t safeBufferLength = 50;
+    char buf[safeBufferLength] = {0};
+    auto ptr = reinterpret_cast<uint8_t*>(&uuid);
+
+    snprintf(
+        buf, safeBufferLength,
+        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+        ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7], ptr[8],
+        ptr[9], ptr[10], ptr[11], ptr[12], ptr[13], ptr[14], ptr[15]);
+    // UUID is in RFC4122 format. Ex: 61a39523-78f2-11e5-9862-e6402cfc3223
+    return std::string(buf);
 }
 
 bool MctpBinding::getUuidCtrlCmd(boost::asio::yield_context& yield,
@@ -1215,7 +1545,19 @@ bool MctpBinding::getUuidCtrlCmd(boost::asio::yield_context& yield,
         return false;
     }
 
-    phosphor::logging::log<phosphor::logging::level::INFO>("Get UUID success");
+    const std::string nilUUID = "00000000-0000-0000-0000-000000000000";
+    mctp_ctrl_resp_get_uuid* getUUIDRespPtr =
+        reinterpret_cast<mctp_ctrl_resp_get_uuid*>(resp.data());
+    std::string uuidResp = formatUUID(getUUIDRespPtr->uuid);
+    if (nilUUID == uuidResp)
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "Get UUID: Device returned Nil UUID");
+        return false;
+    }
+
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
+        ("Get UUID success: " + uuidResp).c_str());
     return true;
 }
 
@@ -1280,7 +1622,7 @@ bool MctpBinding::getMsgTypeSupportCtrlCmd(
     msgTypeSupportResp->msgType.assign(resp.begin() + minMsgTypeRespLen,
                                        resp.end());
 
-    phosphor::logging::log<phosphor::logging::level::INFO>(
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
         "Get Message Type Support success");
     return true;
 }
@@ -1304,7 +1646,7 @@ bool MctpBinding::getMctpVersionSupportCtrlCmd(
     if (PacketState::receivedResponse !=
         sendAndRcvMctpCtrl(yield, req, destEid, bindingPrivate, resp))
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Get MCTP Version Support: Unable to get response");
         return false;
     }
@@ -1358,8 +1700,103 @@ bool MctpBinding::getMctpVersionSupportCtrlCmd(
 
         mctpVersionSupportCtrlResp->verNoEntry.push_back(version);
     }
-    phosphor::logging::log<phosphor::logging::level::INFO>(
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
         "Get MCTP Version Support success");
+    return true;
+}
+
+bool MctpBinding::getPCIVDMessageSupportCtrlCmd(
+    boost::asio::yield_context& yield,
+    const std::vector<uint8_t>& bindingPrivate, const mctp_eid_t destEid,
+    std::vector<uint16_t>& vendorSetIdList, std::string& venFormatData)
+{
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
+        "getPCIVendorIdMessageSupportCtrlCmd called...");
+    std::vector<uint8_t> req = {};
+    std::vector<uint8_t> resp = {};
+    uint8_t vendorIdSet = 0;
+    venFormatData.clear();
+    // local structure to receive the vendor ID response
+    MctpVendIdMsgSupportResp pciVendIdMsgSupportResp;
+    // cannot be sure of the count, so processing from 0 ~ 255
+    while (vendorIdSet < 255)
+    {
+        // format the data as per the request msg format
+        if (!getFormattedReq<MCTP_CTRL_CMD_GET_VENDOR_MESSAGE_SUPPORT>(
+                req, vendorIdSet))
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get MCTP Vendor Id Support: Request formatting failed");
+            return false;
+        }
+
+        if (PacketState::receivedResponse !=
+            sendAndRcvMctpCtrl(yield, req, destEid, bindingPrivate, resp))
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get MCTP Vendor Id Support: sending & receiving failed");
+            return false;
+        }
+
+        // total resp size(including ctrl header) '10'
+        // ctrlheader  Compl.Code  VendIdSet  VendIdFmt  VendorFrmtData
+        // vendIdSetType
+        //     3           1          1          1             2             2
+        //     (bytes)
+        const ssize_t pciVDMessageSupportCmdRespSize =
+            sizeof(MctpVendIdMsgSupportResp);
+
+        if (!checkMinRespSize(resp))
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get MCTP Vendor Id Support: Invalid Response Length");
+            return false;
+        }
+
+        // assuming 1st byte after ctrl header is completion code index
+        uint8_t completionCode = resp[completionCodeIndex];
+        if ((completionCode != MCTP_CTRL_CC_SUCCESS) ||
+            (resp.size() < pciVDMessageSupportCmdRespSize))
+        {
+
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get MCTP Vendor Id Support: Invalid response",
+                phosphor::logging::entry("CC=0x%02X", completionCode),
+                phosphor::logging::entry("LEN=0x%02X", resp.size()));
+            return false;
+        }
+
+        pciVendIdMsgSupportResp = {};
+
+        // copy the response onto local structure
+        std::copy_n(resp.begin(), pciVDMessageSupportCmdRespSize,
+                    reinterpret_cast<uint8_t*>(&pciVendIdMsgSupportResp));
+
+        uint16_t venid = htobe16(pciVendIdMsgSupportResp.vendorIdFormatData);
+        std::stringstream op_str;
+        op_str << std::hex << venid;
+        venFormatData = op_str.str();
+
+        vendorSetIdList.push_back(
+            htobe16(pciVendIdMsgSupportResp.vendorIdSetCmdType));
+
+        if (pciVendIdMsgSupportResp.vendorIdSet == noMoreSet)
+        {
+            // break the loop once 0xFF is found in set.
+            vendorIdSet = 0;
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                "Vendor Id Set-Selector loop Break");
+            break;
+        }
+        vendorIdSet++;
+        if (vendorIdSet == 255 &&
+            pciVendIdMsgSupportResp.vendorIdSet != noMoreSet)
+        { // invalid scenario iteration
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Invalid vendor ID set iteration");
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1431,7 +1868,54 @@ bool MctpBinding::getRoutingTableCtrlCmd(
     if (*(respPtr + sizeof(mctp_ctrl_msg_hdr)) != MCTP_CTRL_CC_SUCCESS)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Get Routing Table Entry failed");
+            "Get Routing Table Entry: Unsuccessful completion code");
+        return false;
+    }
+
+    if (resp.size() < sizeof(mctp_ctrl_resp_get_routing_table))
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Get Routing Table Entry: Response length is too short: Cannot "
+            "read number of entries",
+            phosphor::logging::entry("LEN=%d", resp.size()));
+        return false;
+    }
+
+    mctp_ctrl_resp_get_routing_table* routingTableHdr =
+        reinterpret_cast<mctp_ctrl_resp_get_routing_table*>(resp.data());
+    size_t entryOffset = sizeof(mctp_ctrl_resp_get_routing_table);
+    for (uint8_t i = 0; i < routingTableHdr->number_of_entries; i++)
+    {
+        get_routing_table_entry* routingTableEntry =
+            reinterpret_cast<get_routing_table_entry*>(resp.data() +
+                                                       entryOffset);
+        entryOffset += sizeof(get_routing_table_entry);
+        if (resp.size() < entryOffset)
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get Routing Table Entry: Response length is too short: Cannot "
+                "read routing table entry",
+                phosphor::logging::entry("LEN=%d", resp.size()));
+            return false;
+        }
+
+        entryOffset += routingTableEntry->phys_address_size;
+        if (resp.size() < entryOffset)
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get Routing Table Entry: Response length is too short: Cannot "
+                "read physical address",
+                phosphor::logging::entry("LEN=%d", resp.size()));
+            return false;
+        }
+    }
+
+    if (resp.size() != entryOffset)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Get Routing Table Entry: Invalid response length",
+            phosphor::logging::entry("LEN=%d", resp.size()),
+            phosphor::logging::entry("EXPECTED_LEN=%d", entryOffset));
         return false;
     }
 
@@ -1454,9 +1938,19 @@ void MctpBinding::registerMsgTypes(std::shared_ptr<dbus_interface>& msgTypeIntf,
     msgTypeIntf->initialize();
 }
 
-void MctpBinding::populateEndpointProperties(
+bool MctpBinding::populateEndpointProperties(
     const EndpointProperties& epProperties)
 {
+    // Taking endpointIntf as a reference to check if EID is already registered
+    auto iter = endpointInterface.find(epProperties.endpointEid);
+    if (iter != endpointInterface.end())
+    {
+        phosphor::logging::log<phosphor::logging::level::WARNING>(
+            ("EID " + std::to_string(epProperties.endpointEid) +
+             " is already registered")
+                .c_str());
+        return false;
+    }
 
     std::string mctpDevObj = "/xyz/openbmc_project/mctp/device/";
     std::shared_ptr<dbus_interface> endpointIntf;
@@ -1471,14 +1965,15 @@ void MctpBinding::populateEndpointProperties(
         mctp_server::convertBindingModeTypesToString(epProperties.mode));
     endpointIntf->register_property("NetworkId", epProperties.networkId);
     endpointIntf->initialize();
-    endpointInterface.push_back(endpointIntf);
+    endpointInterface.emplace(epProperties.endpointEid,
+                              std::move(endpointIntf));
 
     // Message type interface
     std::shared_ptr<dbus_interface> msgTypeIntf;
     msgTypeIntf =
         objectServer->add_interface(mctpEpObj, mctp_msg_types::interface);
     registerMsgTypes(msgTypeIntf, epProperties.endpointMsgTypes);
-    msgTypeInterface.push_back(msgTypeIntf);
+    msgTypeInterface.emplace(epProperties.endpointEid, std::move(msgTypeIntf));
 
     // UUID interface
     std::shared_ptr<dbus_interface> uuidIntf;
@@ -1486,7 +1981,24 @@ void MctpBinding::populateEndpointProperties(
                                            "xyz.openbmc_project.Common.UUID");
     uuidIntf->register_property("UUID", epProperties.uuid);
     uuidIntf->initialize();
-    uuidInterface.push_back(uuidIntf);
+    uuidInterface.emplace(epProperties.endpointEid, std::move(uuidIntf));
+    if (epProperties.endpointMsgTypes.vdpci)
+    {
+        std::shared_ptr<dbus_interface> vendorIdIntf;
+        vendorIdIntf = objectServer->add_interface(
+            mctpEpObj, "xyz.openbmc_project.MCTP.PCIVendorDefined");
+        vendorIdIntf->register_property("MessageTypeProperty",
+                                        epProperties.vendorIdCapabilitySets);
+        vendorIdIntf->register_property("VendorID",
+                                        epProperties.vendorIdFormat);
+        vendorIdIntf->initialize();
+        vendorIdInterface.emplace(epProperties.endpointEid,
+                                  std::move(vendorIdIntf));
+    }
+    phosphor::logging::log<phosphor::logging::level::WARNING>(
+        ("Device Registered: EID = " + std::to_string(epProperties.endpointEid))
+            .c_str());
+    return true;
 }
 
 mctp_server::BindingModeTypes MctpBinding::getEndpointType(const uint8_t types)
@@ -1578,76 +2090,127 @@ bool MctpBinding::setMediumId(
     return false;
 }
 
-static std::string formatUUID(guid_t& uuid)
+static std::optional<mctp_eid_t> checkEIDMismatchAndGetEID(mctp_eid_t eid,
+                                                           mctp_eid_t destEID)
 {
-    const size_t safeBufferLength = 50;
-    char buf[safeBufferLength] = {0};
-    auto ptr = reinterpret_cast<uint8_t*>(&uuid);
+    if (eid != destEID && eid != MCTP_EID_NULL && destEID != MCTP_EID_NULL)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "EID mismatch detected", phosphor::logging::entry("EID=%d", eid),
+            phosphor::logging::entry("EID_REPORTED=%d", destEID));
+        return std::nullopt;
+    }
+    if (eid == MCTP_EID_NULL)
+    {
+        eid = destEID;
+    }
+    return eid;
+}
 
-    snprintf(
-        buf, safeBufferLength,
-        "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-        ptr[0], ptr[1], ptr[2], ptr[3], ptr[4], ptr[5], ptr[6], ptr[7], ptr[8],
-        ptr[9], ptr[10], ptr[11], ptr[12], ptr[13], ptr[14], ptr[15]);
-    // UUID is in RFC4122 format. Ex: 61a39523-78f2-11e5-9862-e6402cfc3223
-    return std::string(buf);
+bool MctpBinding::isEIDRegistered(mctp_eid_t eid)
+{
+    if (endpointInterface.count(eid) > 0)
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            ("Endpoint already Registered with EID " + std::to_string(eid))
+                .c_str());
+        return true;
+    }
+
+    return false;
+}
+
+bool MctpBinding::isEIDMappedToUUID(mctp_eid_t& eid, std::string& destUUID)
+{
+    std::optional<mctp_eid_t> eidFromTable = getEIDFromUUID(destUUID);
+    if (eidFromTable.has_value())
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            ("EID from table " + std::to_string(eidFromTable.value())).c_str());
+        if (eid == eidFromTable.value())
+        {
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                ("Endpoint already Registered with EID " + std::to_string(eid))
+                    .c_str());
+            return true;
+        }
+        phosphor::logging::log<phosphor::logging::level::INFO>(
+            "Endpoint needs re-registration");
+        unregisterEndpoint(eidFromTable.value());
+        // Give priority for EID from UUID table while re-registering
+        eid = eidFromTable.value();
+    }
+    return false;
 }
 
 std::optional<mctp_eid_t> MctpBinding::busOwnerRegisterEndpoint(
     boost::asio::yield_context& yield,
-    const std::vector<uint8_t>& bindingPrivate)
+    const std::vector<uint8_t>& bindingPrivate, mctp_eid_t eid)
 {
-    // Send getMctpVersionSupport for MCTP Control commands to a NULL EID
-
-    MctpVersionSupportCtrlResp getMctpControlVersion;
+    MctpVersionSupportCtrlResp getMctpControlVersion = {};
     if (!(getMctpVersionSupportCtrlCmd(yield, bindingPrivate, MCTP_EID_NULL,
                                        MCTP_MESSAGE_TYPE_MCTP_CTRL,
                                        &getMctpControlVersion)))
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Get MCTP Control Version failed");
         return std::nullopt;
     }
 
     // TODO: Validate MCTP Control message version supported
 
-    // Get EID
     std::vector<uint8_t> getEidResp = {};
     if (!(getEidCtrlCmd(yield, bindingPrivate, MCTP_EID_NULL, getEidResp)))
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>("Get EID failed");
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "Get EID failed");
+        return std::nullopt;
+    }
+    mctp_ctrl_resp_get_eid* getEidRespPtr =
+        reinterpret_cast<mctp_ctrl_resp_get_eid*>(getEidResp.data());
+    std::optional<mctp_eid_t> destEID =
+        checkEIDMismatchAndGetEID(eid, getEidRespPtr->eid);
+    if (!destEID.has_value())
+    {
+        return std::nullopt;
+    }
+    eid = destEID.value();
+
+    std::vector<uint8_t> getUuidResp = {};
+    if (!(getUuidCtrlCmd(yield, bindingPrivate, MCTP_EID_NULL, getUuidResp)))
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "Get UUID failed");
+        if (isEIDRegistered(getEidRespPtr->eid))
+        {
+            return getEidRespPtr->eid;
+        }
+
+        if (eid != MCTP_EID_NULL)
+        {
+            unregisterEndpoint(eid);
+        }
+
+        // In case EP doesn't support Get UUID set to all 0. This results in
+        // nullUUID
+        getUuidResp.resize(sizeof(mctp_ctrl_resp_get_uuid), 0);
+    }
+
+    mctp_ctrl_resp_get_uuid* getUuidRespPtr =
+        reinterpret_cast<mctp_ctrl_resp_get_uuid*>(getUuidResp.data());
+    std::string destUUID = formatUUID(getUuidRespPtr->uuid);
+    if (isEIDMappedToUUID(getEidRespPtr->eid, destUUID))
+    {
+        return getEidRespPtr->eid;
+    }
+
+    if (!deviceWatcher.checkDeviceInitThreshold(bindingPrivate))
+    {
         return std::nullopt;
     }
 
-    mctp_ctrl_resp_get_eid* getEidRespPtr =
-        reinterpret_cast<mctp_ctrl_resp_get_eid*>(getEidResp.data());
-    mctp_eid_t destEid = getEidRespPtr->eid;
-
-    if (getEidRespPtr->eid != MCTP_EID_NULL)
+    if (eid == MCTP_EID_NULL)
     {
-        updateEidStatus(destEid, true);
-    }
-
-    // Get UUID (Not mandatory to support)
-    std::vector<uint8_t> getUuidResp = {};
-    if (!(getUuidCtrlCmd(yield, bindingPrivate, destEid, getUuidResp)))
-    {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "Get UUID failed");
-    }
-
-    // TODO: Check the obtained UUID from the route table and verify whether
-    // it had an entry in the route table
-    // TODO: Routing table construction
-    // TODO: Assigne pool of EID if the endpoint is a bridge
-    // TODO: Wait for T-reclame to free an EID
-    // TODO: Take care of EIDs(Static EID) which are not owned by us
-    // TODO: Set EID should use previously known EID if there was a UUID match
-
-    // Set EID
-    if (getEidRespPtr->eid == MCTP_EID_NULL)
-    {
-        mctp_eid_t eid;
         try
         {
             eid = getAvailableEidFromPool();
@@ -1656,44 +2219,48 @@ std::optional<mctp_eid_t> MctpBinding::busOwnerRegisterEndpoint(
         {
             return std::nullopt;
         }
-        std::vector<uint8_t> setEidResp = {};
-        if (!(setEidCtrlCmd(yield, bindingPrivate, 0x00, set_eid, eid,
-                            setEidResp)))
-        {
-            phosphor::logging::log<phosphor::logging::level::ERR>(
-                "Set EID failed");
-            updateEidStatus(eid, false);
-            return std::nullopt;
-        }
-
-        mctp_ctrl_resp_set_eid* setEidRespPtr =
-            reinterpret_cast<mctp_ctrl_resp_set_eid*>(setEidResp.data());
-        destEid = setEidRespPtr->eid_set;
-
-        // If EID in the resp is different from the one sent in request,
-        // we need to check if that EID exists in the pool and update its
-        // status as assigned.
-        updateEidStatus(destEid, true);
     }
+
+    // TODO: Routing table construction
+    // TODO: Assigne pool of EID if the endpoint is a bridge
+    // TODO: Take care of EIDs(Static EID) which are not owned by us
+
+    // Set EID
+    std::vector<uint8_t> setEidResp = {};
+    if (!(setEidCtrlCmd(yield, bindingPrivate, MCTP_EID_NULL, set_eid, eid,
+                        setEidResp)))
+    {
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
+            "Set EID failed");
+        updateEidStatus(eid, false);
+        return std::nullopt;
+    }
+    mctp_ctrl_resp_set_eid* setEidRespPtr =
+        reinterpret_cast<mctp_ctrl_resp_set_eid*>(setEidResp.data());
+    if (eid != setEidRespPtr->eid_set)
+    {
+        // TODO: Force setEID if needed
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Set EID failed. Reported different EID in the response.");
+        updateEidStatus(eid, false);
+        return std::nullopt;
+    }
+    updateEidStatus(eid, true);
 
     // Get Message Type Support
     MsgTypeSupportCtrlResp msgTypeSupportResp;
-    if (!(getMsgTypeSupportCtrlCmd(yield, bindingPrivate, destEid,
+    if (!(getMsgTypeSupportCtrlCmd(yield, bindingPrivate, eid,
                                    &msgTypeSupportResp)))
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "Get Message Type Support failed");
         return std::nullopt;
     }
 
-    // TODO: Get Vendor ID command
-
     // Expose interface as per the result
     EndpointProperties epProperties;
-    epProperties.endpointEid = destEid;
-    mctp_ctrl_resp_get_uuid* getUuidRespPtr =
-        reinterpret_cast<mctp_ctrl_resp_get_uuid*>(getUuidResp.data());
-    epProperties.uuid = formatUUID(getUuidRespPtr->uuid);
+    epProperties.endpointEid = eid;
+    epProperties.uuid = destUUID;
     try
     {
         epProperties.mode = getEndpointType(getEidRespPtr->eid_type);
@@ -1706,9 +2273,47 @@ std::optional<mctp_eid_t> MctpBinding::busOwnerRegisterEndpoint(
     // Keep Network ID as zero and update it later if a change happend.
     epProperties.networkId = 0x00;
     epProperties.endpointMsgTypes = getMsgTypes(msgTypeSupportResp.msgType);
-    populateEndpointProperties(epProperties);
+    getVendorDefinedMessageTypes(yield, bindingPrivate, eid, epProperties);
 
-    return destEid;
+    if (!populateEndpointProperties(epProperties))
+    {
+        return std::nullopt;
+    }
+
+    // Update the uuidTable with eid and the uuid of the endpoint registered.
+    if (destUUID != nullUUID && eid != MCTP_EID_NULL)
+    {
+        uuidTable.push_back(std::make_pair(eid, destUUID));
+    }
+
+    return eid;
+}
+
+void MctpBinding::getVendorDefinedMessageTypes(
+    boost::asio::yield_context yield,
+    const std::vector<uint8_t>& bindingPrivate, mctp_eid_t destEid,
+    EndpointProperties& epProperties)
+{
+    if (epProperties.endpointMsgTypes.vdpci)
+    {
+        std::vector<uint16_t> vendorSetIdList = {};
+        std::string vendorFormat;
+        if (!getPCIVDMessageSupportCtrlCmd(yield, bindingPrivate, destEid,
+                                           vendorSetIdList, vendorFormat))
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "Get Vendor Id Support failed");
+            /*
+              If this command fails, still go ahead with endpoint
+              registration since this is an optional command
+            */
+        }
+        epProperties.vendorIdCapabilitySets.assign(vendorSetIdList.begin(),
+                                                   vendorSetIdList.end());
+
+        epProperties.vendorIdFormat = "0x";
+        epProperties.vendorIdFormat.append(vendorFormat);
+    }
 }
 
 /* This api provides option to register an endpoint using the binding
@@ -1723,7 +2328,16 @@ std::optional<mctp_eid_t>
 {
     if (bindingModeType == mctp_server::BindingModeTypes::BusOwner)
     {
-        return busOwnerRegisterEndpoint(yield, bindingPrivate);
+        std::optional<mctp_eid_t> destEID =
+            busOwnerRegisterEndpoint(yield, bindingPrivate, eid);
+
+        // Handle the device if removed and the device reset due to Frimware
+        // update/hot plugged.
+        if (!destEID)
+        {
+            clearRegisteredDevice(eid);
+        }
+        return destEID;
     }
 
     MsgTypeSupportCtrlResp msgTypeSupportResp;
@@ -1757,33 +2371,74 @@ std::optional<mctp_eid_t>
     // TODO:get Network ID, now set it to 0
     epProperties.networkId = 0x00;
     epProperties.endpointMsgTypes = getMsgTypes(msgTypeSupportResp.msgType);
-    populateEndpointProperties(epProperties);
+
+    getVendorDefinedMessageTypes(yield, bindingPrivate, eid, epProperties);
+
+    if (!populateEndpointProperties(epProperties))
+    {
+        return std::nullopt;
+    }
     return eid;
 }
 
-void MctpBinding::removeInterface(
-    std::string& interfacePath,
-    std::vector<std::shared_ptr<dbus_interface>>& interfaces)
+bool MctpBinding::removeInterface(mctp_eid_t eid,
+                                  endpointInterfaceMap& interfaces)
 {
-    for (auto dbusInterface = interfaces.begin();
-         dbusInterface != interfaces.end(); dbusInterface++)
+    auto iter = interfaces.find(eid);
+    if (iter != interfaces.end())
     {
-        if ((*dbusInterface)->get_object_path() == interfacePath)
+        objectServer->remove_interface(iter->second);
+        interfaces.erase(iter);
+        return true;
+    }
+    return false;
+}
+
+void MctpBinding::unregisterEndpoint(mctp_eid_t eid)
+{
+    bool epIntf = removeInterface(eid, endpointInterface);
+    bool msgTypeIntf = removeInterface(eid, msgTypeInterface);
+    bool uuidIntf = removeInterface(eid, uuidInterface);
+    // Vendor ID interface is optional thus not considering return status
+    removeInterface(eid, vendorIdInterface);
+
+    if (epIntf && msgTypeIntf && uuidIntf)
+    {
+        phosphor::logging::log<phosphor::logging::level::WARNING>(
+            ("Device Unregistered: EID = " + std::to_string(eid)).c_str());
+    }
+}
+
+std::optional<mctp_eid_t> MctpBinding::getEIDFromUUID(std::string& uuidStr)
+{
+    for (const auto& uuidEntry : uuidTable)
+    {
+        if (uuidStr.compare(std::get<1>(uuidEntry)) == 0)
         {
-            std::shared_ptr<dbus_interface> tmpIf = *dbusInterface;
-            interfaces.erase(dbusInterface);
-            objectServer->remove_interface(tmpIf);
+            return std::get<0>(uuidEntry);
+        }
+    }
+    return std::nullopt;
+}
+
+void MctpBinding::clearRegisteredDevice(const mctp_eid_t eid)
+{
+    for (unsigned int tableItr = 0; tableItr < uuidTable.size(); tableItr++)
+    {
+        if (std::get<0>(uuidTable[tableItr]) == eid)
+        {
+            // Remove the entry from uuidTable and unregister the device.
+            uuidTable.erase(uuidTable.begin() + static_cast<int32_t>(tableItr));
+            unregisterEndpoint(eid);
+            // Return EID to the pool of EIDs available for assignment
+            // as the Endpoint is non-responsive.
+            updateEidStatus(eid, false);
             break;
         }
     }
 }
 
-void MctpBinding::unregisterEndpoint(mctp_eid_t eid)
+void MctpBinding::addUnknownEIDToDeviceTable(const mctp_eid_t, void*)
 {
-    std::string mctpDevObj = "/xyz/openbmc_project/mctp/device/";
-    std::string mctpEpObj = mctpDevObj + std::to_string(eid);
-
-    removeInterface(mctpEpObj, endpointInterface);
-    removeInterface(mctpEpObj, msgTypeInterface);
-    removeInterface(mctpEpObj, uuidInterface);
+    // Do nothing
 }

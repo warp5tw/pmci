@@ -102,6 +102,9 @@ static std::string getMessageType(uint8_t msgType)
         case MCTP_MESSAGE_TYPE_SPDM: // 0x05
             msgTypeValue = "SPDM";
             break;
+        case MCTP_MESSAGE_TYPE_SECUREDMSG: // 0x06
+            msgTypeValue = "SECUREDMSG";
+            break;
         case MCTP_MESSAGE_TYPE_VDPCI: // 0x7E
             msgTypeValue = "VDPCI";
             break;
@@ -327,6 +330,23 @@ std::optional<std::pair<int, std::vector<uint8_t>>>
             reqHeader.push_back(msgType);
             reqHeader.push_back(rqDInstanceID);
         }
+        else if (messageType == "SECUREDMSG")
+        {
+            // MCTPMsgType | SessionId | SPDMVersion | RequestResponseCode
+            constexpr size_t minSpdmReqSize = 4;
+            if (payload.size() < minSpdmReqSize)
+            {
+                phosphor::logging::log<phosphor::logging::level::WARNING>(
+                    "mctp-emulator: Invalid SPDM message: Insufficient bytes "
+                    "in "
+                    "Payload");
+                return std::nullopt;
+            }
+            uint8_t rqDSessionID = payload.at(1);
+
+            reqHeader.push_back(msgType);
+            reqHeader.push_back(rqDSessionID);
+        }
         else
         {
             reqHeader.push_back(msgType);
@@ -365,14 +385,18 @@ std::optional<std::pair<int, std::vector<uint8_t>>>
                     }
 
                     // Fill the response header as per the MCTP message type
-                    // Note:- PLDM requests and responses in the JSON file
-                    // should starts from second byte of PLDM message
-                    // header(HdrVer | PLDMType)
+                    // Note:- PLDM requests and responses in the JSON
+                    // file should starts from second byte of message
+                    // header(HdrVer | PLDMType )
                     if (messageType == "PLDM")
                     {
                         constexpr uint8_t makeResp = 0x7F;
                         response.assign(reqHeader.begin(), reqHeader.end());
                         response.at(1) = response.at(1) & makeResp;
+                    }
+                    if (messageType == "SECUREDMSG")
+                    {
+                        response.assign(reqHeader.begin(), reqHeader.end());
                     }
                     response.insert(response.end(),
                                     std::begin(iter["response"]),
@@ -474,9 +498,8 @@ MctpBinding::MctpBinding(
         "mctp-emulator: MctpBinding constructor call...");
     eid = 8;
 
-    // TODO:Probably read these from mctp_config.json ?
-    uint8_t bindingType = 2;
-    uint8_t bindingMedium = 3;
+    uint8_t bindingType = 0xFF; // OEM Binding
+    uint8_t bindingMedium = 0XFF;
     bool staticEidSupport = false;
     std::string bindingMode("xyz.openbmc_project.MCTP.BusOwner");
     delayTimer =
@@ -552,7 +575,6 @@ MctpBinding::MctpBinding(
 
     mctpInterface->register_property("Eid", eid);
 
-    // TODO:Use the enum from D-Bus interface
     mctpInterface->register_property("BindingID", bindingType);
 
     mctpInterface->register_property("BindingMediumID", bindingMedium);
