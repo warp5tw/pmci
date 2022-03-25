@@ -90,6 +90,99 @@ void MCTPImpl::detectMctpEndpointsAsync(StatusCallback&& registerCB)
                        });
 }
 
+void MCTPImpl::triggerMCTPDeviceDiscovery(const eid_t dstEId)
+{
+    auto it = this->endpointMap.find(dstEId);
+    if (this->endpointMap.end() == it)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "triggerMCTPDeviceDiscovery: EID not found in end point map",
+            phosphor::logging::entry("EID=%d", dstEId));
+        return;
+    }
+
+    connection->async_method_call(
+        [](boost::system::error_code ec) {
+            if (ec)
+            {
+                phosphor::logging::log<phosphor::logging::level::ERR>(
+                    ("MCTP device discovery error: " + ec.message()).c_str());
+            }
+        },
+        it->second.second, "/xyz/openbmc_project/mctp",
+        "xyz.openbmc_project.MCTP.Base", "TriggerDeviceDiscovery");
+}
+
+int MCTPImpl::reserveBandwidth(boost::asio::yield_context yield,
+                               const eid_t dstEId, const uint16_t timeout)
+{
+    auto it = this->endpointMap.find(dstEId);
+    if (this->endpointMap.end() == it)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("reserveBandwidth: EID not found in end point map" +
+             std::to_string(dstEId))
+                .c_str());
+        return -1;
+    }
+    boost::system::error_code ec;
+    int status = connection->yield_method_call<int>(
+        yield, ec, it->second.second, "/xyz/openbmc_project/mctp",
+        "xyz.openbmc_project.MCTP.Base", "ReserveBandwidth", dstEId, timeout);
+
+    if (ec)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("ReserveBandwidth: failed for EID: " + std::to_string(dstEId) +
+             " " + ec.message())
+                .c_str());
+        return -1;
+    }
+    else if (status < 0)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("ReserveBandwidth: failed for EID: " + std::to_string(dstEId) +
+             " rc: " + std::to_string(status))
+                .c_str());
+    }
+    return status;
+}
+
+int MCTPImpl::releaseBandwidth(boost::asio::yield_context yield,
+                               const eid_t dstEId)
+{
+    auto it = this->endpointMap.find(dstEId);
+    if (this->endpointMap.end() == it)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("ReleaseBandwidth: EID not found in end point map" +
+             std::to_string(dstEId))
+                .c_str());
+        return -1;
+    }
+    boost::system::error_code ec;
+    int status = connection->yield_method_call<int>(
+        yield, ec, it->second.second, "/xyz/openbmc_project/mctp",
+        "xyz.openbmc_project.MCTP.Base", "ReleaseBandwidth", dstEId);
+    if (ec)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("ReleaseBandwidth: failed for EID: " + std::to_string(dstEId) +
+             " " + ec.message())
+                .c_str());
+        return -1;
+    }
+    else if (status < 0)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            ("ReleaseBandwidth: failed for EID: " + std::to_string(dstEId) +
+             " rc: " + std::to_string(status))
+                .c_str());
+    }
+
+    return status;
+}
+
 void MCTPImpl::unRegisterListeners(const std::string& serviceName)
 {
     auto itr = matchers.find(serviceName);
@@ -315,47 +408,55 @@ MCTPImpl::EndpointMap MCTPImpl::buildMatchingEndpointMap(
                 }
                 if (mctpw::MessageType::vdpci == config.type)
                 {
-                    static const char* vdMsgTypeInterface =
-                        "xyz.openbmc_project.MCTP.PCIVendorDefined";
-                    auto vendorIdStr = readPropertyValue<std::string>(
-                        *connection, bus.second.c_str(), objectPath.str,
-                        vdMsgTypeInterface, "VendorID");
-                    uint16_t vendorId;
+                    if (config.vendorId)
                     {
-                        std::stringstream ss;
-                        ss << std::hex << vendorIdStr;
-                        ss >> vendorId;
-                        if (ss.fail())
+                        static const char* vdMsgTypeInterface =
+                            "xyz.openbmc_project.MCTP.PCIVendorDefined";
+                        auto vendorIdStr = readPropertyValue<std::string>(
+                            *connection, bus.second.c_str(), objectPath.str,
+                            vdMsgTypeInterface, "VendorID");
+                        uint16_t vendorId = static_cast<uint16_t>(
+                            std::stoi(vendorIdStr, nullptr, 16));
+                        if (vendorId != be16toh(*config.vendorId))
                         {
                             phosphor::logging::log<
-                                phosphor::logging::level::WARNING>(
-                                ("Unable to parse vendor id from " +
-                                 vendorIdStr)
+                                phosphor::logging::level::INFO>(
+                                ("VendorID not matching for " + objectPath.str)
                                     .c_str());
                             continue;
                         }
+
+                        if (config.vendorMessageType)
+                        {
+                            auto msgTypes =
+                                readPropertyValue<std::vector<uint16_t>>(
+                                    *connection, bus.second.c_str(),
+                                    objectPath.str, vdMsgTypeInterface,
+                                    "MessageTypeProperty");
+                            auto itMsgType = std::find(
+                                msgTypes.begin(), msgTypes.end(),
+                                be16toh(config.vendorMessageType->value));
+                            if (msgTypes.end() == itMsgType)
+                            {
+                                phosphor::logging::log<
+                                    phosphor::logging::level::INFO>(
+                                    ("Vendor Message Type not matching for " +
+                                     objectPath.str)
+                                        .c_str());
+                                continue;
+                            }
+                        }
                     }
-                    if (vendorId !=
-                        be16toh(config.vendorDefinedValues->vendorId))
+                    else
                     {
-                        phosphor::logging::log<phosphor::logging::level::INFO>(
-                            ("VendorID not matching for " + objectPath.str)
-                                .c_str());
-                        continue;
-                    }
-                    auto msgTypes = readPropertyValue<std::vector<uint16_t>>(
-                        *connection, bus.second.c_str(), objectPath.str,
-                        vdMsgTypeInterface, "MessageTypeProperty");
-                    auto itMsgType = std::find(
-                        msgTypes.begin(), msgTypes.end(),
-                        be16toh(config.vendorDefinedValues->vendorMessageType));
-                    if (msgTypes.end() == itMsgType)
-                    {
-                        phosphor::logging::log<phosphor::logging::level::INFO>(
-                            ("Vendor Message Type not matching for " +
-                             objectPath.str)
-                                .c_str());
-                        continue;
+                        if (config.vendorMessageType)
+                        {
+                            phosphor::logging::log<
+                                phosphor::logging::level::ERR>(
+                                "Vendor Message Type matching is not allowed "
+                                "when Vendor ID is not set");
+                            continue;
+                        }
                     }
                 }
                 /* format of of endpoint path: path/Eid */

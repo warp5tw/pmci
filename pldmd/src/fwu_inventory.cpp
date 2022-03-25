@@ -15,8 +15,8 @@
  */
 #include "fwu_inventory.hpp"
 
+#include "fru_utils.hpp"
 #include "pldm.hpp"
-#include "utils.hpp"
 
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/asio/object_server.hpp>
@@ -184,8 +184,7 @@ int FWInventoryInfo::unpackCompData(const uint16_t count,
             phosphor::logging::log<phosphor::logging::level::ERR>(
                 ("GetFirmwareParameters: decode response of component data "
                  "failed, TID: " +
-                 utils::changeToString(tid) +
-                 " RETVAL: " + utils::changeToString(retVal))
+                 std::to_string(tid) + " RETVAL: " + std::to_string(retVal))
                     .c_str());
             break;
         }
@@ -210,8 +209,8 @@ int FWInventoryInfo::unpackCompData(const uint16_t count,
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
             ("Component count not matched,actual component count: " +
-             utils::changeToString(found) +
-             " expected component count: " + utils::changeToString(count))
+             std::to_string(found) +
+             " expected component count: " + std::to_string(count))
                 .c_str());
         return PLDM_ERROR;
     }
@@ -296,9 +295,6 @@ void FWInventoryInfo::addPCIDescriptorsToDBus(const std::string& objPath)
         objPath, "xyz.openbmc_project.PLDM.FWU.PCIDescriptor");
     for (auto& it : descriptors)
     {
-        std::replace_if(
-            it.second.begin(), it.second.end(),
-            [](const char& c) { return !isprint(c); }, ' ');
         pciDevIntf->register_property(it.first, it.second);
     }
     pciDevIntf->initialize();
@@ -308,8 +304,7 @@ void FWInventoryInfo::addPCIDescriptorsToDBus(const std::string& objPath)
 void FWInventoryInfo::addDescriptorsToDBus()
 {
     const std::string objPath = "/xyz/openbmc_project/pldm/fwu/" +
-                                utils::changeToString(tid) +
-                                "/deviceDescriptors";
+                                std::to_string(tid) + "/deviceDescriptors";
 
     switch (
         static_cast<pldm::fwu::DescriptorIdentifierType>(initialDescriptorType))
@@ -331,7 +326,7 @@ void FWInventoryInfo::addDescriptorsToDBus()
 void FWInventoryInfo::addCompImgSetDataToDBus()
 {
     const std::string compImgSetPath = "/xyz/openbmc_project/pldm/fwu/" +
-                                       utils::changeToString(tid) +
+                                       std::to_string(tid) +
                                        "/componentImageSetInfo";
     auto activeCompImgSetInfoIntf = objServer->add_unique_interface(
         compImgSetPath,
@@ -391,7 +386,7 @@ void FWInventoryInfo::addFirmwareInventoryToDBus()
 
 std::string FWInventoryInfo::getInventoryName()
 {
-    if (auto name = utils::getFruProperty(tid, "Name"))
+    if (auto name = fruUtils::getFruProperty(tid, "Name"))
     {
         std::string inventoryName = std::get<std::string>(*name);
 
@@ -443,11 +438,11 @@ void FWInventoryInfo::addInventoryInfoToDBus()
 void FWInventoryInfo::addCompDataToDBus()
 {
     const std::string objPath = "/xyz/openbmc_project/pldm/fwu/" +
-                                utils::changeToString(tid) +
+                                std::to_string(tid) +
                                 "/componentImageSetInfo/component_";
     for (auto& itr : compPropertiesMap)
     {
-        const std::string compPath = objPath + utils::changeToString(itr.first);
+        const std::string compPath = objPath + std::to_string(itr.first);
         auto compProps = itr.second;
         auto activeCompInfoIntf = objServer->add_unique_interface(
             compPath, "xyz.openbmc_project.PLDM.FWU.ActiveComponentInfo");

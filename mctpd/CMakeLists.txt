@@ -62,9 +62,12 @@ set(SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/hw/PCIeDriver.cpp
     ${PROJECT_SOURCE_DIR}/src/hw/aspeed/PCIeMonitor.cpp
     ${PROJECT_SOURCE_DIR}/src/hw/aspeed/PCIeDriver.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils/Configuration.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils/device_watcher.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils/transmission_queue.cpp
+    ${PROJECT_SOURCE_DIR}/src/utils/eid_pool.cpp
     ${PROJECT_SOURCE_DIR}/src/hw/nuvoton/PCIeMonitor.cpp
-    ${PROJECT_SOURCE_DIR}/src/hw/nuvoton/PCIeDriver.cpp
-    ${PROJECT_SOURCE_DIR}/src/utils/Configuration.cpp)
+    ${PROJECT_SOURCE_DIR}/src/hw/nuvoton/PCIeDriver.cpp)
 
 set(HEADER_FILES
     ${PROJECT_SOURCE_DIR}/include/MCTPBinding.hpp
@@ -129,7 +132,8 @@ if(${MCTPD_BUILD_UT})
   set(SRC
       src/PCIeBinding.cpp src/SMBusBinding.cpp src/MCTPBinding.cpp
       src/hw/DeviceMonitor.cpp src/hw/PCIeDriver.cpp
-      src/utils/Configuration.cpp)
+      src/utils/Configuration.cpp src/utils/device_watcher.cpp
+      src/utils/transmission_queue.cpp src/utils/eid_pool.cpp)
 
   set(TEST_FILES
       tests/test-mctpd.cpp tests/test-binding.cpp

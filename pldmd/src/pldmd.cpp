@@ -40,6 +40,14 @@ static uint8_t reservedPLDMType = pldmInvalidType;
 TIDMapper tidMapper;
 std::unique_ptr<mctpw::MCTPWrapper> mctpWrapper;
 
+void triggerDeviceDiscovery(const pldm_tid_t tid)
+{
+    if (auto eidPtr = tidMapper.getMappedEID(tid))
+    {
+        mctpWrapper->triggerMCTPDeviceDiscovery(*eidPtr);
+    }
+}
+
 static bool validateReserveBW(const pldm_tid_t tid, const uint8_t pldmType)
 {
     return rsvBWActive && !(tid == reservedTID && pldmType == reservedPLDMType);
@@ -53,8 +61,8 @@ bool reserveBandwidth(const boost::asio::yield_context yield,
     {
         phosphor::logging::log<phosphor::logging::level::INFO>(
             ("Reserve bandwidth is active for TID: " +
-             utils::changeToString(reservedTID) +
-             ". RESERVED_PLDM_TYPE: " + utils::changeToString(reservedPLDMType))
+             std::to_string(reservedTID) +
+             ". RESERVED_PLDM_TYPE: " + std::to_string(reservedPLDMType))
                 .c_str());
         return false;
     }
@@ -67,19 +75,8 @@ bool reserveBandwidth(const boost::asio::yield_context yield,
     {
         return false;
     }
-    boost::system::error_code ec;
-    auto bus = getSdBus();
-    int rc = bus->yield_method_call<int>(
-        yield, ec, "xyz.openbmc_project.MCTP_SMBus_PCIe_slot",
-        "/xyz/openbmc_project/mctp", "xyz.openbmc_project.MCTP.Base",
-        "ReserveBandwidth", eid, timeout);
-
-    if (ec || rc < 0)
+    if (mctpWrapper->reserveBandwidth(yield, eid, timeout) < 0)
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            (("ReserveBandwidth: failed for EID: ") +
-             utils::changeToString(eid))
-                .c_str());
         return false;
     }
     rsvBWActive = true;
@@ -108,19 +105,8 @@ bool releaseBandwidth(const boost::asio::yield_context yield,
     {
         return false;
     }
-    boost::system::error_code ec;
-    auto bus = getSdBus();
-    int rc = bus->yield_method_call<int>(
-        yield, ec, "xyz.openbmc_project.MCTP_SMBus_PCIe_slot",
-        "/xyz/openbmc_project/mctp", "xyz.openbmc_project.MCTP.Base",
-        "ReleaseBandwidth", *eid);
-
-    if (ec || rc < 0)
+    if (mctpWrapper->releaseBandwidth(yield, *eid) < 0)
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            (("releaseBandwidth: failed for EID: ") +
-             utils::changeToString(*eid))
-                .c_str());
         return false;
     }
     rsvBWActive = false;
@@ -138,8 +124,10 @@ std::optional<pldm_tid_t> TIDMapper::getMappedTID(const mctpw_eid_t eid)
             return eidMap.first;
         }
     }
-    phosphor::logging::log<phosphor::logging::level::WARNING>(
-        "EID not found in the mapper");
+    phosphor::logging::log<phosphor::logging::level::DEBUG>(
+        ("Mapper: EID " + std::to_string(static_cast<int>(eid)) +
+         " is not mapped to any TID")
+            .c_str());
     return std::nullopt;
 }
 
@@ -161,8 +149,8 @@ bool TIDMapper::addEntry(const pldm_tid_t tid, const mctpw_eid_t eid)
 
     tidMap.insert_or_assign(tid, eid);
     phosphor::logging::log<phosphor::logging::level::INFO>(
-        ("Mapper: TID " + utils::changeToString(static_cast<int>(tid)) +
-         " mapped to EID " + utils::changeToString(static_cast<int>(eid)))
+        ("Mapper: TID " + std::to_string(static_cast<int>(tid)) +
+         " mapped to EID " + std::to_string(static_cast<int>(eid)))
             .c_str());
     return true;
 }
@@ -289,8 +277,8 @@ bool sendReceivePldmMessage(boost::asio::yield_context yield,
         phosphor::logging::log<phosphor::logging::level::INFO>(
             ("sendReceivePldmMessage is not allowed. Reserve bandwidth is "
              "active for TID: " +
-             utils::changeToString(reservedTID) +
-             " RESERVED_PLDM_TYPE: " + utils::changeToString(reservedPLDMType))
+             std::to_string(reservedTID) +
+             " RESERVED_PLDM_TYPE: " + std::to_string(reservedPLDMType))
                 .c_str());
         return false;
     }
@@ -337,7 +325,8 @@ bool sendReceivePldmMessage(boost::asio::yield_context yield,
         // Insert MCTP Message Type to start of the payload
         if (retry == 0)
         {
-            pldmReq.insert(pldmReq.begin(), PLDM);
+            pldmReq.insert(pldmReq.begin(),
+                           static_cast<uint8_t>(mctpw::MessageType::pldm));
         }
 
         // Clear the resp vector each time before a retry
@@ -372,7 +361,8 @@ bool sendReceivePldmMessage(boost::asio::yield_context yield,
 
             // Verify the response received is of type PLDM
             constexpr int mctpMsgType = 0;
-            if (pldmResp.at(mctpMsgType) == PLDM)
+            if (pldmResp.at(mctpMsgType) ==
+                static_cast<uint8_t>(mctpw::MessageType::pldm))
             {
                 // Remove the MCTP message type and IC bit from req and resp
                 // payload.
@@ -422,8 +412,8 @@ bool sendPldmMessage(boost::asio::yield_context yield, const pldm_tid_t tid,
         phosphor::logging::log<phosphor::logging::level::INFO>(
             ("sendPldmMessage is not allowed. Reserve bandwidth is active for "
              "TID: " +
-             utils::changeToString(reservedTID) +
-             " RESERVED_PLDM_TYPE: " + utils::changeToString(reservedPLDMType))
+             std::to_string(reservedTID) +
+             " RESERVED_PLDM_TYPE: " + std::to_string(reservedPLDMType))
                 .c_str());
         return false;
     }
@@ -440,7 +430,8 @@ bool sendPldmMessage(boost::asio::yield_context yield, const pldm_tid_t tid,
         return false;
     }
     // Insert MCTP Message Type to start of the payload
-    payload.insert(payload.begin(), PLDM);
+    payload.insert(payload.begin(),
+                   static_cast<uint8_t>(mctpw::MessageType::pldm));
     utils::printVect("Send PLDM message(MCTP payload):", payload);
     std::pair<boost::system::error_code, int> rc;
 
@@ -476,32 +467,39 @@ auto msgRecvCallback = [](void*, mctpw::eid_t srcEid, bool tagOwner,
     // Intentional copy. MCTPWrapper provides const reference in callback
     auto payload = data;
     // Verify the response received is of type PLDM
-    if (!payload.empty() && payload.at(0) == PLDM)
+    if (!payload.empty() &&
+        payload.at(0) == static_cast<uint8_t>(mctpw::MessageType::pldm))
     {
         // Discard the packet if no matching TID is found
         // Why: We do not have to process packets from uninitialised Termini
-        if (auto tid = tidMapper.getMappedTID(srcEid))
+        auto tid = tidMapper.getMappedTID(srcEid);
+        if (!tid)
         {
-            utils::printVect("PLDM message received(MCTP payload):", payload);
-            payload.erase(payload.begin());
-            if (auto pldmMsgType = getPldmMessageType(payload))
+            phosphor::logging::log<phosphor::logging::level::WARNING>(
+                ("EID " + std::to_string(static_cast<int>(srcEid)) +
+                 " is not mapped to any TID; Discarding the packet")
+                    .c_str());
+            return;
+        }
+
+        utils::printVect("PLDM message received(MCTP payload):", payload);
+        payload.erase(payload.begin());
+        if (auto pldmMsgType = getPldmMessageType(payload))
+        {
+            switch (*pldmMsgType)
             {
-                switch (*pldmMsgType)
-                {
-                    case PLDM_FWUP:
-                        pldm::fwu::pldmMsgRecvFwUpdCallback(*tid, msgTag,
-                                                            tagOwner, payload);
-                        break;
-                        // No use case for other PLDM message types
-                    default:
-                        phosphor::logging::log<phosphor::logging::level::INFO>(
-                            "Unsupported PLDM message received",
-                            phosphor::logging::entry("TID=%d", *tid),
-                            phosphor::logging::entry("EID=%d", srcEid),
-                            phosphor::logging::entry("MSG_TYPE=%d",
-                                                     *pldmMsgType));
-                        break;
-                }
+                case PLDM_FWUP:
+                    pldm::fwu::pldmMsgRecvFwUpdCallback(*tid, msgTag, tagOwner,
+                                                        payload);
+                    break;
+                    // No use case for other PLDM message types
+                default:
+                    phosphor::logging::log<phosphor::logging::level::INFO>(
+                        "Unsupported PLDM message received",
+                        phosphor::logging::entry("TID=%d", *tid),
+                        phosphor::logging::entry("EID=%d", srcEid),
+                        phosphor::logging::entry("MSG_TYPE=%d", *pldmMsgType));
+                    break;
             }
         }
     }
@@ -521,7 +519,7 @@ uint8_t createInstanceId(pldm_tid_t tid)
 void initDevice(const mctpw_eid_t eid, boost::asio::yield_context yield)
 {
     phosphor::logging::log<phosphor::logging::level::INFO>(
-        ("Initializing MCTP EID " + utils::changeToString(eid)).c_str());
+        ("Initializing MCTP EID " + std::to_string(eid)).c_str());
 
     pldm_tid_t assignedTID = 0x00;
     pldm::base::CommandSupportTable cmdSupportTable;
@@ -560,7 +558,7 @@ void initDevice(const mctpw_eid_t eid, boost::asio::yield_context yield)
 void deleteDevice(const pldm_tid_t tid)
 {
     phosphor::logging::log<phosphor::logging::level::INFO>(
-        ("Delete PLDM device with TID " + utils::changeToString(tid)).c_str());
+        ("Delete PLDM device with TID " + std::to_string(tid)).c_str());
 
     // Delete the resources in reverse order of init to avoid errors due to
     // dependency if any
@@ -602,6 +600,13 @@ void onDeviceUpdate(void*, const mctpw::Event& evt,
             if (tid)
             {
                 deleteDevice(tid.value());
+            }
+            else
+            {
+                phosphor::logging::log<phosphor::logging::level::WARNING>(
+                    ("EID " + std::to_string(static_cast<int>(evt.eid)) +
+                     " is not mapped to any TID")
+                        .c_str());
             }
             break;
         }
@@ -653,9 +658,6 @@ int main(void)
     conn->request_name(pldmService);
     setSdBus(conn);
     setObjServer(objectServer);
-
-    auto objManager =
-        std::make_shared<sdbusplus::server::manager::manager>(*conn, pldmPath);
 
     enableDebug();
 

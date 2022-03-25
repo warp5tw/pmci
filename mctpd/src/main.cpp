@@ -9,10 +9,9 @@
 #include <phosphor-logging/log.hpp>
 #include <sdbusplus/asio/object_server.hpp>
 
-std::shared_ptr<sdbusplus::asio::connection> conn;
-
 std::shared_ptr<MctpBinding>
     getBindingPtr(const Configuration& configuration,
+                  std::shared_ptr<sdbusplus::asio::connection> conn,
                   std::shared_ptr<object_server>& objectServer,
                   boost::asio::io_context& ioc)
 {
@@ -21,14 +20,14 @@ std::shared_ptr<MctpBinding>
     if (auto smbusConfig =
             dynamic_cast<const SMBusConfiguration*>(&configuration))
     {
-        return std::make_shared<SMBusBinding>(objectServer, mctpBaseObj,
+        return std::make_shared<SMBusBinding>(conn, objectServer, mctpBaseObj,
                                               *smbusConfig, ioc);
     }
     else if (auto pcieConfig =
                  dynamic_cast<const PcieConfiguration*>(&configuration))
     {
         return std::make_shared<PCIeBinding>(
-            objectServer, mctpBaseObj, *pcieConfig, ioc,
+            conn, objectServer, mctpBaseObj, *pcieConfig, ioc,
             std::make_unique<hw::nuvoton::PCIeDriver>(ioc),
             std::make_unique<hw::nuvoton::PCIeMonitor>(ioc));
     }
@@ -53,19 +52,20 @@ int main(int argc, char* argv[])
 
     boost::asio::io_context ioc;
     boost::asio::signal_set signals(ioc, SIGINT, SIGTERM);
+    std::shared_ptr<MctpBinding> bindingPtr;
     signals.async_wait(
-        [&ioc](const boost::system::error_code&, const int& sigNum) {
+        [&ioc, &bindingPtr](const boost::system::error_code&, const int&) {
+            // Ensure we destroy binding object before we do an ioc stop
+            bindingPtr.reset();
             ioc.stop();
-            signal(sigNum, SIG_DFL);
-            raise(sigNum);
         });
 
-    conn = std::make_shared<sdbusplus::asio::connection>(ioc);
+    auto conn = std::make_shared<sdbusplus::asio::connection>(ioc);
 
     /* Process configuration */
     try
     {
-        mctpdConfigurationPair = getConfiguration(binding, configPath);
+        mctpdConfigurationPair = getConfiguration(conn, binding, configPath);
     }
     catch (const std::exception& e)
     {
@@ -91,7 +91,8 @@ int main(int argc, char* argv[])
     phosphor::logging::log<phosphor::logging::level::INFO>(
         ("Starting MCTP service: " + mctpServiceName).c_str());
 
-    auto bindingPtr = getBindingPtr(*mctpdConfiguration, objectServer, ioc);
+    bindingPtr = getBindingPtr(*mctpdConfiguration, conn, objectServer, ioc);
+
     if (!bindingPtr)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(

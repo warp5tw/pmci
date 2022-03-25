@@ -441,7 +441,7 @@ static std::optional<std::string> getAuxName(const uint8_t nameStrCount,
     constexpr size_t strASCIInullSize = 1;
     constexpr size_t strUTF16nullSize = 2;
     constexpr size_t codeUnitSize = 2;
-    constexpr size_t maxStrLen = 32;
+    constexpr size_t maxStrLen = 64;
     const std::string supportedLangTag = "en";
     const uint8_t* next = auxNamesStart;
     size_t advanced{};
@@ -749,8 +749,12 @@ void PDRManager::createEntityAssociationTree(
 static bool mergeContainedEntities(EntityNode::NodePtr& node,
                                    EntityNode::NodePtr& entityAssociation)
 {
-    if (node->containerEntity.entity_container_id ==
-        entityAssociation->containerEntity.entity_container_id)
+    if (node->containerEntity.entity_type ==
+            entityAssociation->containerEntity.entity_type &&
+        node->containerEntity.entity_instance_num ==
+            entityAssociation->containerEntity.entity_instance_num &&
+        node->containerEntity.entity_container_id ==
+            entityAssociation->containerEntity.entity_container_id)
     {
         std::move(entityAssociation->containedEntities.begin(),
                   entityAssociation->containedEntities.end(),

@@ -19,6 +19,7 @@
 
 #include <boost/asio/steady_timer.hpp>
 #include <sdbusplus/asio/object_server.hpp>
+#include <set>
 
 #include "firmware_update.h"
 
@@ -36,7 +37,6 @@ class FWUpdate
                                 const std::vector<uint8_t>& req);
     bool setMatchedFDDescriptors();
     void terminateFwUpdate(const boost::asio::yield_context yield);
-
     template <typename propertyType>
     void updateFWUProperty(const boost::asio::yield_context yield,
                            const std::string& interfaceName,
@@ -52,7 +52,10 @@ class FWUpdate
         return (1 + (size / PLDM_FWU_BASELINE_TRANSFER_SIZE)) * 3;
     }
     uint64_t getApplicableComponents();
-
+    uint16_t getReserveEidTimeOut();
+    void cancelReserveBWTimer();
+    void activateReserveBandwidth();
+    uint16_t getApplicableComponentsCount(uint64_t val) const;
     int processRequestUpdate(const boost::asio::yield_context yield);
     int requestUpdate(const boost::asio::yield_context yield,
                       struct variable_field& compImgSetVerStrn);
@@ -63,11 +66,11 @@ class FWUpdate
                           uint32_t& nextDataTransferHandle,
                           uint8_t& transferFlag);
     int processSendPackageData(const boost::asio::yield_context yield);
-    int sendPackageData(const boost::asio::yield_context yield,
-                        uint32_t& offset, uint32_t& length);
-    uint8_t setTransferFlag(const uint32_t offset, const uint32_t length,
-                            const uint32_t dataSize);
-    uint32_t calcMaxNumReq(const uint32_t dataSize);
+    int sendPackageData(const boost::asio::yield_context yield, size_t& offset,
+                        size_t& length, std::set<uint32_t>& recvdRequests);
+    uint8_t setTransferFlag(const size_t offset, const size_t length,
+                            const size_t dataSize);
+    size_t calcMaxNumReq(const size_t dataSize);
     int processPassComponentTable(const boost::asio::yield_context yield);
     int passComponentTable(
         const boost::asio::yield_context yield,
@@ -86,9 +89,7 @@ class FWUpdate
                         uint8_t& compCompatabilityRespCode,
                         bitfield32_t& updateOptFlagsEnabled,
                         uint16_t& estimatedTimeReqFd);
-    int processRequestFirmwareData(const boost::asio::yield_context yield,
-                                   const uint32_t componentSize,
-                                   const uint32_t componentOffset);
+    int processRequestFirmwareData(const boost::asio::yield_context yield);
     int requestFirmwareData(const boost::asio::yield_context yield,
                             const std ::vector<uint8_t>& pldmReq,
                             uint32_t& offset, uint32_t& length,
@@ -142,22 +143,23 @@ class FWUpdate
     bool preparePassComponentRequest(
         struct pass_component_table_req& componentTable,
         std::string& compVersionString, const uint16_t compCnt);
-    bool initTransferFlag(const uint16_t compCnt, uint8_t& flag);
+    bool initPassComponentTableTransferFlag(uint8_t& flag);
     bool prepareUpdateComponentRequest(std::string& compVersionString,
                                        struct update_component_req& component);
 
     void compUpdateProgress(const boost::asio::yield_context yield);
 
     int processSendMetaData(const boost::asio::yield_context yield);
-    int sendMetaData(const boost::asio::yield_context yield, uint32_t& offset,
-                     uint32_t& length);
-
+    int sendMetaData(const boost::asio::yield_context yield, size_t& offset,
+                     size_t& length, std::set<uint32_t>& recvdRequests);
+    uint16_t passCompCount = 0;
     pldm_tid_t currentTid;
     uint8_t expectedCmd;
     uint8_t msgTag;
     std::vector<uint8_t> fdReq;
     bool fdReqMatched = false;
     bool isReserveBandwidthActive = false;
+    std::unique_ptr<boost::asio::steady_timer> reserveBWTimer = nullptr;
     bool isComponentAvailableForUpdate = false;
     uint8_t currentDeviceIDRecord;
     bool updateMode = false;

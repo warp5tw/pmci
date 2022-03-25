@@ -23,7 +23,10 @@ using smbus_server =
     sdbusplus::xyz::openbmc_project::MCTP::Binding::server::SMBus;
 
 namespace fs = std::filesystem;
-
+std::map<MuxIdleModes, std::string> muxIdleModesMap{
+    {MuxIdleModes::muxIdleModeConnect, "-1"},
+    {MuxIdleModes::muxIdleModeDisconnect, "-2"},
+};
 static void throwRunTimeError(const std::string& err)
 {
     phosphor::logging::log<phosphor::logging::level::ERR>(err.c_str());
@@ -270,15 +273,22 @@ bool SMBusBinding::reserveBandwidth(const mctp_eid_t eid,
             "reserveBandwidth not required, fd is not a mux port");
         return false;
     }
-    if (mctp_smbus_init_pull_model(prvt) < 0)
+
+    if (!rsvBWActive)
     {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "reserveBandwidth: init pull model failed");
-        return false;
+        if (mctp_smbus_init_pull_model(prvt) < 0)
+        {
+            phosphor::logging::log<phosphor::logging::level::ERR>(
+                "reserveBandwidth: init pull model failed");
+            return false;
+        }
+        // TODO: Set only the required MUX.
+        setMuxIdleMode(MuxIdleModes::muxIdleModeConnect);
+        rsvBWActive = true;
+        reservedEID = eid;
     }
-    rsvBWActive = true;
-    reservedEID = eid;
-    startTimerAndReleaseBW(timeout, prvt);
+
+    startTimerAndReleaseBW(timeout, *prvt);
     return true;
 }
 
@@ -287,36 +297,21 @@ bool SMBusBinding::releaseBandwidth(const mctp_eid_t eid)
     if (!rsvBWActive || eid != reservedEID)
     {
         phosphor::logging::log<phosphor::logging::level::ERR>(
-            (("reserveBandwidth is not active for EID: ") +
-             std::to_string(reservedEID))
+            (("reserveBandwidth is not active for EID: ") + std::to_string(eid))
                 .c_str());
         return false;
     }
-    std::optional<std::vector<uint8_t>> pvtData = getBindingPrivateData(eid);
-    if (!pvtData)
-    {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "releaseBandwidth: Invalid destination EID");
-        return false;
-    }
-    mctp_smbus_pkt_private* prvt =
-        reinterpret_cast<mctp_smbus_pkt_private*>(pvtData->data());
-    if (mctp_smbus_exit_pull_model(prvt) < 0)
-    {
-        phosphor::logging::log<phosphor::logging::level::ERR>(
-            "releaseBandwidth: failed to exit pull model");
-        return false;
-    }
-    rsvBWActive = false;
-    reservedEID = 0;
     reserveBWTimer.cancel();
     return true;
 }
 
 void SMBusBinding::startTimerAndReleaseBW(const uint16_t interval,
-                                          const mctp_smbus_pkt_private* prvt)
+                                          const mctp_smbus_pkt_private prvt)
 {
-    reserveBWTimer.expires_after(std::chrono::milliseconds(interval * 1000));
+    // expires_after() return the number of asynchronous operations that were
+    // cancelled.
+    ret = reserveBWTimer.expires_after(
+        std::chrono::milliseconds(interval * 1000));
     reserveBWTimer.async_wait([this,
                                prvt](const boost::system::error_code& ec) {
         if (ec == boost::asio::error::operation_aborted)
@@ -330,7 +325,15 @@ void SMBusBinding::startTimerAndReleaseBW(const uint16_t interval,
             phosphor::logging::log<phosphor::logging::level::ERR>(
                 "startTimerAndReleaseBW: reserveBWTimer failed");
         }
-        if (mctp_smbus_exit_pull_model(prvt) < 0)
+        if (ret)
+        {
+            phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                "startTimerAndReleaseBW: timer restarted");
+            ret = 0;
+            return;
+        }
+        setMuxIdleMode(MuxIdleModes::muxIdleModeDisconnect);
+        if (mctp_smbus_exit_pull_model(&prvt) < 0)
         {
             phosphor::logging::log<phosphor::logging::level::ERR>(
                 "startTimerAndReleaseBW: mctp_smbus_exit_pull_model failed");
@@ -341,11 +344,12 @@ void SMBusBinding::startTimerAndReleaseBW(const uint16_t interval,
     });
 }
 
-SMBusBinding::SMBusBinding(std::shared_ptr<object_server>& objServer,
+SMBusBinding::SMBusBinding(std::shared_ptr<sdbusplus::asio::connection> conn,
+                           std::shared_ptr<object_server>& objServer,
                            const std::string& objPath,
                            const SMBusConfiguration& conf,
                            boost::asio::io_context& ioc) :
-    MctpBinding(objServer, objPath, conf, ioc,
+    MctpBinding(conn, objServer, objPath, conf, ioc,
                 mctp_server::BindingTypes::MctpOverSmbus),
     smbusReceiverFd(ioc), reserveBWTimer(ioc), scanTimer(ioc),
     addRootDevices(true)
@@ -358,12 +362,13 @@ SMBusBinding::SMBusBinding(std::shared_ptr<object_server>& objServer,
         bus = conf.bus;
         bmcSlaveAddr = conf.bmcSlaveAddr;
         supportedEndpointSlaveAddress = conf.supportedEndpointSlaveAddress;
+        scanInterval = conf.scanInterval;
 
         // TODO: If we are not top most busowner, wait for top mostbus owner
         // to issue EID Pool
         if (conf.mode == mctp_server::BindingModeTypes::BusOwner)
         {
-            initializeEidPool(conf.eidPool);
+            eidPool.initializeEidPool(conf.eidPool);
         }
 
         if (bindingModeType == mctp_server::BindingModeTypes::BusOwner)
@@ -373,6 +378,9 @@ SMBusBinding::SMBusBinding(std::shared_ptr<object_server>& objServer,
         else
         {
             discoveredFlag = DiscoveryFlags::kUnDiscovered;
+            smbusRoutingInterval = conf.routingIntervalSec;
+            smbusRoutingTableTimer =
+                std::make_unique<boost::asio::steady_timer>(ioc);
         }
 
         registerProperty(smbusInterface, "DiscoveredFlag",
@@ -396,6 +404,11 @@ SMBusBinding::SMBusBinding(std::shared_ptr<object_server>& objServer,
     }
 }
 
+void SMBusBinding::triggerDeviceDiscovery()
+{
+    scanTimer.cancel();
+}
+
 void SMBusBinding::scanDevices()
 {
     phosphor::logging::log<phosphor::logging::level::DEBUG>("Scanning devices");
@@ -412,20 +425,19 @@ void SMBusBinding::scanDevices()
                 "Reserve bandwidth active. Unable to scan devices");
         }
 
-        // TODO: Get timer tick frequency from EntityManager
-        scanTimer.expires_after(std::chrono::seconds(60));
+        scanTimer.expires_after(std::chrono::seconds(scanInterval));
         scanTimer.async_wait([this](const boost::system::error_code& ec) {
-            if (ec == boost::asio::error::operation_aborted)
-            {
-                phosphor::logging::log<phosphor::logging::level::WARNING>(
-                    "Device scanning aborted");
-                return;
-            }
-            if (ec)
+            if (ec && ec != boost::asio::error::operation_aborted)
             {
                 phosphor::logging::log<phosphor::logging::level::ERR>(
                     "Device scanning timer failed");
                 return;
+            }
+            if (ec == boost::asio::error::operation_aborted)
+            {
+                phosphor::logging::log<phosphor::logging::level::WARNING>(
+                    "Device scan wait timer aborted. Re-triggering device "
+                    "discovery");
             }
             scanDevices();
         });
@@ -465,8 +477,15 @@ void SMBusBinding::restoreMuxIdleMode()
     }
 }
 
-void SMBusBinding::setMuxIdleModeToDisconnect()
+void SMBusBinding::setMuxIdleMode(const MuxIdleModes mode)
 {
+    auto itr = muxIdleModesMap.find(mode);
+    if (itr == muxIdleModesMap.end())
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "Inavlid mux idle mode");
+        return;
+    }
     std::string rootPort;
     if (!getBusNumFromPath(bus, rootPort))
     {
@@ -476,16 +495,16 @@ void SMBusBinding::setMuxIdleModeToDisconnect()
     fs::path rootPath = fs::path("/sys/bus/i2c/devices/i2c-" + rootPort + "/");
     std::string matchString = rootPort + std::string(R"(-\d+$)");
     std::vector<std::string> i2cMuxes{};
+    static bool muxIdleModeFlag = false;
 
     // Search for mux ports
     if (!findFiles(rootPath, matchString, i2cMuxes))
     {
-        phosphor::logging::log<phosphor::logging::level::INFO>(
+        phosphor::logging::log<phosphor::logging::level::DEBUG>(
             "No mux interfaces found");
         return;
     }
 
-    const std::string muxIdleModeDisconnect = "-2";
     for (const auto& muxPath : i2cMuxes)
     {
         std::string path = muxPath + "/idle_state";
@@ -498,14 +517,17 @@ void SMBusBinding::setMuxIdleModeToDisconnect()
         std::fstream idleFile(idlePath);
         if (idleFile.good())
         {
-            std::string currentMuxIdleMode;
-            idleFile >> currentMuxIdleMode;
-            muxIdleModeMap.insert_or_assign(path, currentMuxIdleMode);
+            if (!muxIdleModeFlag)
+            {
+                std::string currentMuxIdleMode;
+                idleFile >> currentMuxIdleMode;
+                muxIdleModeMap.insert_or_assign(path, currentMuxIdleMode);
 
-            phosphor::logging::log<phosphor::logging::level::DEBUG>(
-                (path + " " + currentMuxIdleMode).c_str());
+                phosphor::logging::log<phosphor::logging::level::DEBUG>(
+                    (path + " " + currentMuxIdleMode).c_str());
+            }
 
-            idleFile << muxIdleModeDisconnect;
+            idleFile << itr->second;
         }
         else
         {
@@ -514,6 +536,7 @@ void SMBusBinding::setMuxIdleModeToDisconnect()
                 phosphor::logging::entry("MUX_PATH=%s", idlePath.c_str()));
         }
     }
+    muxIdleModeFlag = true;
 }
 
 void SMBusBinding::initializeBinding()
@@ -524,7 +547,7 @@ void SMBusBinding::initializeBinding()
         auto rootPort = SMBusInit();
         phosphor::logging::log<phosphor::logging::level::INFO>(
             "Scanning root port");
-        setMuxIdleModeToDisconnect();
+        setMuxIdleMode(MuxIdleModes::muxIdleModeDisconnect);
         // Scan root port
         scanPort(outFd, rootDeviceMap);
         muxPortMap = getMuxFds(rootPort);
@@ -558,6 +581,7 @@ SMBusBinding::~SMBusBinding()
         close(outFd);
     }
     mctp_smbus_free(smbus);
+    objectServer->remove_interface(smbusInterface);
 }
 
 std::string SMBusBinding::SMBusInit()
@@ -756,6 +780,19 @@ void SMBusBinding::initEndpointDiscovery(boost::asio::yield_context& yield)
             {
                 smbusDeviceTable.push_back(
                     std::make_pair(eid.value(), smbusBindingPvt));
+                std::string busName(bus);
+
+                if (muxPortMap.count(smbusBindingPvt.fd) != 0)
+                {
+                    auto itr = muxPortMap.find(smbusBindingPvt.fd);
+                    busName.assign(std::to_string(itr->second));
+                }
+
+                phosphor::logging::log<phosphor::logging::level::INFO>(
+                    ("SMBus device at bus:" + busName + ",8 bit address: " +
+                     std::to_string(smbusBindingPvt.slave_addr) +
+                     " registered at EID " + std::to_string(*eid))
+                        .c_str());
             }
         }
         else
@@ -808,6 +845,16 @@ bool SMBusBinding::handleSetEndpointId(mctp_eid_t destEid, void* bindingPrivate,
     {
         updateDiscoveredFlag(DiscoveryFlags::kDiscovered);
         mctpInterface->set_property("Eid", ownEid);
+
+        mctp_smbus_pkt_private* smbusPrivate =
+            reinterpret_cast<mctp_smbus_pkt_private*>(bindingPrivate);
+        busOwnerSlaveAddr = smbusPrivate->slave_addr;
+        busOwnerFd = smbusPrivate->fd;
+
+        if (bindingModeType != mctp_server::BindingModeTypes::BusOwner)
+        {
+            updateRoutingTable();
+        }
     }
 
     return true;
@@ -984,4 +1031,168 @@ void SMBusBinding::addUnknownEIDToDeviceTable(const mctp_eid_t eid,
     phosphor::logging::log<phosphor::logging::level::INFO>(
         ("New EID added to device table. EID = " + std::to_string(eid))
             .c_str());
+}
+
+bool SMBusBinding::isBindingDataSame(const mctp_smbus_pkt_private& dataMain,
+                                     const mctp_smbus_pkt_private& dataTmp)
+{
+    if (std::tie(dataMain.fd, dataMain.slave_addr) ==
+        std::tie(dataTmp.fd, dataTmp.slave_addr))
+    {
+        return true;
+    }
+    return false;
+}
+
+bool SMBusBinding::isDeviceTableChanged(
+    const std::vector<DeviceTableEntry_t>& tableMain,
+    const std::vector<DeviceTableEntry_t>& tableTmp)
+{
+    if (tableMain.size() != tableTmp.size())
+    {
+        return true;
+    }
+    for (size_t i = 0; i < tableMain.size(); i++)
+    {
+        if ((std::get<0>(tableMain[i]) != std::get<0>(tableTmp[i])) ||
+            (!isBindingDataSame(std::get<1>(tableMain[i]),
+                                std::get<1>(tableTmp[i]))))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool SMBusBinding::isDeviceEntryPresent(
+    const DeviceTableEntry_t& deviceEntry,
+    const std::vector<DeviceTableEntry_t>& deviceTable)
+{
+    for (size_t i = 0; i < deviceTable.size(); i++)
+    {
+        if (std::get<0>(deviceTable[i]) == std::get<0>(deviceEntry))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+void SMBusBinding::updateRoutingTable()
+{
+    if (discoveredFlag != DiscoveryFlags::kDiscovered)
+    {
+        phosphor::logging::log<phosphor::logging::level::ERR>(
+            "SMBus Get Routing Table failed, undiscovered");
+        return;
+    }
+
+    struct mctp_smbus_pkt_private pktPrv = {};
+    pktPrv.fd = busOwnerFd;
+    pktPrv.mux_hold_timeout = 0;
+    pktPrv.mux_flags = 0;
+    pktPrv.slave_addr = busOwnerSlaveAddr;
+    uint8_t* pktPrvPtr = reinterpret_cast<uint8_t*>(&pktPrv);
+    std::vector<uint8_t> prvData = std::vector<uint8_t>(
+        pktPrvPtr, pktPrvPtr + sizeof(mctp_smbus_pkt_private));
+
+    boost::asio::spawn(io, [prvData, this](boost::asio::yield_context yield) {
+        std::vector<uint8_t> getRoutingTableEntryResp = {};
+        std::vector<DeviceTableEntry_t> smbusDeviceTableTmp;
+        uint8_t entryHandle = 0x00;
+        uint8_t entryHdlCounter = 0x00;
+        while ((entryHandle != 0xff) && (entryHdlCounter < 0xff))
+        {
+            if (!getRoutingTableCtrlCmd(yield, prvData, busOwnerEid,
+                                        entryHandle, getRoutingTableEntryResp))
+            {
+                phosphor::logging::log<phosphor::logging::level::ERR>(
+                    "Get Routing Table failed");
+                return;
+            }
+
+            auto routingTableHdr =
+                reinterpret_cast<mctp_ctrl_resp_get_routing_table*>(
+                    getRoutingTableEntryResp.data());
+            size_t phyAddrOffset = sizeof(mctp_ctrl_resp_get_routing_table);
+
+            for (uint8_t entryIndex = 0;
+                 entryIndex < routingTableHdr->number_of_entries; entryIndex++)
+            {
+                auto routingTableEntry =
+                    reinterpret_cast<get_routing_table_entry*>(
+                        getRoutingTableEntryResp.data() + phyAddrOffset);
+
+                phyAddrOffset += sizeof(get_routing_table_entry);
+
+                if ((routingTableEntry->phys_transport_binding_id ==
+                     MCTP_BINDING_SMBUS) &&
+                    (routingTableEntry->phys_address_size == 1))
+                {
+                    struct mctp_smbus_pkt_private smbusBindingPvt = {};
+                    smbusBindingPvt.fd = busOwnerFd;
+                    smbusBindingPvt.mux_hold_timeout = 0;
+                    smbusBindingPvt.mux_flags = 0;
+                    smbusBindingPvt.slave_addr = static_cast<uint8_t>(
+                        (getRoutingTableEntryResp[phyAddrOffset] << 1));
+
+                    for (uint8_t eidRange = 0;
+                         eidRange < routingTableEntry->eid_range_size;
+                         eidRange++)
+                    {
+                        smbusDeviceTableTmp.push_back(std::make_pair(
+                            routingTableEntry->starting_eid + eidRange,
+                            smbusBindingPvt));
+                    }
+                }
+                phyAddrOffset += routingTableEntry->phys_address_size;
+            }
+            entryHandle = routingTableHdr->next_entry_handle;
+        }
+
+        if (isDeviceTableChanged(smbusDeviceTable, smbusDeviceTableTmp))
+        {
+            processRoutingTableChanges(smbusDeviceTableTmp, yield, prvData);
+            smbusDeviceTable = smbusDeviceTableTmp;
+        }
+        entryHdlCounter++;
+    });
+
+    smbusRoutingTableTimer->expires_after(
+        std::chrono::seconds(smbusRoutingInterval));
+    smbusRoutingTableTimer->async_wait(
+        std::bind(&SMBusBinding::updateRoutingTable, this));
+}
+
+/* Function takes new routing table, detect changes and creates or removes
+ * device interfaces on dbus.
+ */
+void SMBusBinding::processRoutingTableChanges(
+    const std::vector<DeviceTableEntry_t>& newTable,
+    boost::asio::yield_context& yield, const std::vector<uint8_t>& prvData)
+{
+    /* find removed endpoints, in case entry is not present
+     * in the newly read routing table remove dbus interface
+     * for this device
+     */
+    for (auto& deviceTableEntry : smbusDeviceTable)
+    {
+        if (!isDeviceEntryPresent(deviceTableEntry, newTable))
+        {
+            unregisterEndpoint(std::get<0>(deviceTableEntry));
+        }
+    }
+
+    /* find new endpoints, in case entry is in the newly read
+     * routing table but not present in the routing table stored as
+     * the class member, register new dbus device interface
+     */
+    for (auto& deviceTableEntry : newTable)
+    {
+        if (!isDeviceEntryPresent(deviceTableEntry, smbusDeviceTable))
+        {
+            registerEndpoint(yield, prvData, std::get<0>(deviceTableEntry),
+                             mctp_server::BindingModeTypes::Endpoint);
+        }
+    }
 }

@@ -40,8 +40,7 @@ MCTPConfiguration::MCTPConfiguration(MessageType msgType, BindingType binding) :
 }
 
 MCTPConfiguration::MCTPConfiguration(MessageType msgType, BindingType binding,
-                                     uint16_t vid, uint16_t vendorMsgType,
-                                     uint16_t vendorMsgTypeMask) :
+                                     uint16_t vid) :
     type(msgType),
     bindingType(binding)
 {
@@ -49,7 +48,15 @@ MCTPConfiguration::MCTPConfiguration(MessageType msgType, BindingType binding,
     {
         throw std::invalid_argument("MsgType expected VDPCI");
     }
-    setVendorDefinedValues(vid, vendorMsgType, vendorMsgTypeMask);
+    setVendorId(vid);
+}
+
+MCTPConfiguration::MCTPConfiguration(MessageType msgType, BindingType binding,
+                                     uint16_t vid, uint16_t vendorMsgType,
+                                     uint16_t vendorMsgTypeMask) :
+    MCTPConfiguration(msgType, binding, vid)
+{
+    setVendorMessageType(vendorMsgType, vendorMsgTypeMask);
 }
 
 MCTPWrapper::MCTPWrapper(boost::asio::io_context& ioContext,
@@ -124,4 +131,21 @@ std::pair<boost::system::error_code, int>
 const MCTPWrapper::EndpointMap& MCTPWrapper::getEndpointMap()
 {
     return pimpl->getEndpointMap();
+}
+
+void MCTPWrapper::triggerMCTPDeviceDiscovery(const eid_t dstEId)
+{
+    pimpl->triggerMCTPDeviceDiscovery(dstEId);
+}
+
+int MCTPWrapper::reserveBandwidth(boost::asio::yield_context yield,
+                                  const eid_t dstEId, const uint16_t timeout)
+{
+    return pimpl->reserveBandwidth(yield, dstEId, timeout);
+}
+
+int MCTPWrapper::releaseBandwidth(boost::asio::yield_context yield,
+                                  const eid_t dstEId)
+{
+    return pimpl->releaseBandwidth(yield, dstEId);
 }

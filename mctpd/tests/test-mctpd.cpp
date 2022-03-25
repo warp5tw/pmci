@@ -137,6 +137,11 @@ TEST_F(MctpdBaseTest, BaseIfPropertyTest)
         .Times(1)
         .WillRepeatedly(Return(true));
 
+    EXPECT_CALL(*mctpInterface,
+                register_method(StrEq("TriggerDeviceDiscovery")))
+        .Times(1)
+        .WillRepeatedly(Return(true));
+
     EXPECT_CALL(
         *smbusInterface,
         register_property(StrEq("ArpMasterSupport"), An<bool>(),
@@ -176,7 +181,7 @@ TEST_F(MctpdBaseTest, BaseIfPropertyTest)
     /*Invoke constructor */
     boost::asio::io_context ioc;
 
-    std::unique_ptr<MctpBinding> bindingPtr =
-        std::make_unique<SMBusBinding>(bus, mctpBaseObj, smbusConfig, ioc);
+    std::unique_ptr<MctpBinding> bindingPtr = std::make_unique<SMBusBinding>(
+        conn, bus, mctpBaseObj, smbusConfig, ioc);
     bindingPtr->initializeBinding();
 }

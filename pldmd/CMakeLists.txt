@@ -59,6 +59,7 @@ set (SRC_FILES ${PROJECT_SOURCE_DIR}/src/pldmd.cpp
                ${PROJECT_SOURCE_DIR}/src/fru.cpp
                ${PROJECT_SOURCE_DIR}/src/base.cpp
                ${PROJECT_SOURCE_DIR}/src/utils.cpp
+               ${PROJECT_SOURCE_DIR}/src/fru_support.cpp
 )
 
 set (HEADER_FILES ${PROJECT_SOURCE_DIR}/include/pldm.hpp
@@ -72,8 +73,7 @@ set (SERVICE_FILES
 add_executable(${PROJECT_NAME} ${SRC_FILES} ${HEADER_FILES})
 
 target_link_libraries (${PROJECT_NAME} mctpwplus sdbusplus -lsystemd -lpldm_intel
-                        -lpthread -lstdc++fs -lphosphor_dbus -lmctpw
-                        -lboost_coroutine)
+                        -lpthread -lstdc++fs -lphosphor_dbus -lboost_coroutine)
 
 install (TARGETS ${PROJECT_NAME} DESTINATION bin)
 install (FILES ${SERVICE_FILES} DESTINATION /lib/systemd/system/)
